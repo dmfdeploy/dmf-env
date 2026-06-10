@@ -1,0 +1,5 @@
+# dmf-env — CODEOWNERS. Activates on GitHub once branch protection requires reviews.
+*                    @dmfdeploy/maintainers
+/terraform/          @dmfdeploy/maintainers
+/bin/                @dmfdeploy/maintainers
+/.github/            @dmfdeploy/maintainers

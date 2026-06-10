@@ -1,0 +1,7 @@
+DMF Platform — dmf-env (generic environment tooling)
+Copyright 2026 DMF Platform contributors
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes no upstream-derived components beyond standard
+Terraform / Ansible providers declared in terraform/modules/ or
+task imports.

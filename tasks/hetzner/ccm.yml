@@ -1,0 +1,109 @@
+---
+# Provider-specific task: Hetzner Cloud Controller Manager.
+# Installs the official CCM manifest so the generic ingress role can rely on
+# Service type=LoadBalancer being reconciled against real Hetzner LB resources.
+#
+# Activated by setting in env group_vars:
+#   cluster_ingress_provider_tasks: "{{ inventory_dir }}/../../tasks/hetzner_ccm.yml"
+#
+# Required vars (set in env inventory or exported from OpenBao):
+#   hcloud_ccm_token    — Hetzner Cloud API token (vault_hcloud_token)
+#   hcloud_ccm_network  — name of the Hetzner private network (e.g. k3s-private)
+
+- name: Set Hetzner CCM defaults
+  ansible.builtin.set_fact:
+    hcloud_ccm_version: "{{ hcloud_ccm_version | default('v1.31.1') }}"
+    hcloud_ccm_namespace: "{{ hcloud_ccm_namespace | default('kube-system') }}"
+    hcloud_ccm_secret_name: "{{ hcloud_ccm_secret_name | default('hcloud') }}"
+    hcloud_ccm_token: "{{ hcloud_ccm_token | default(vault_hcloud_token | default('')) }}"
+
+- name: Require Hetzner token and network
+  ansible.builtin.assert:
+    that:
+      - hcloud_ccm_token | length > 0
+      - hcloud_ccm_network | length > 0
+    fail_msg: "Hetzner CCM requires hcloud_ccm_token and hcloud_ccm_network"
+
+- name: Create Hetzner CCM secret
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ hcloud_ccm_secret_name }}"
+        namespace: "{{ hcloud_ccm_namespace }}"
+      type: Opaque
+      stringData:
+        token: "{{ hcloud_ccm_token }}"
+        network: "{{ hcloud_ccm_network }}"
+
+- name: Apply Hetzner CCM manifest
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    src: "https://github.com/hetznercloud/hcloud-cloud-controller-manager/releases/download/{{ hcloud_ccm_version }}/ccm-networks.yaml"
+
+- name: Wait for Hetzner CCM deployment
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    kind: Deployment
+    name: hcloud-cloud-controller-manager
+    namespace: "{{ hcloud_ccm_namespace }}"
+  register: hcloud_ccm_deployment
+  until: hcloud_ccm_deployment.resources[0].status.readyReplicas | default(0) >= 1
+  retries: 30
+  delay: 10
+
+# ---------------------------------------------------------------------------
+# Patch node providerIDs so the CCM can map Kubernetes nodes to Hetzner
+# Cloud servers. The CCM's cloud-node-controller only sets providerIDs for
+# newly-registered nodes; nodes that joined before the CCM was deployed keep
+# an empty spec.providerID, which causes:
+#   - LB targets never get added ("UnknownProviderIDPrefix" event)
+#   - LoadBalancer Service stays pending / returns empty responses
+# This step is idempotent — it skips nodes that already have the correct
+# hcloud:// providerID.
+# ---------------------------------------------------------------------------
+
+- name: Discover Hetzner server IDs
+  ansible.builtin.command:
+    cmd: "hcloud server list -o json"
+  register: hcloud_server_list
+  changed_when: false
+  delegate_to: localhost
+  become: false
+
+- name: Build server name → ID mapping
+  ansible.builtin.set_fact:
+    hcloud_server_map: >-
+      {{
+        hcloud_server_map | default({}) |
+        combine({ item.name: item.id | string })
+      }}
+  loop: "{{ hcloud_server_list.stdout | from_json }}"
+
+- name: Patch nodes with Hetzner providerIDs
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Node
+      metadata:
+        name: "{{ item }}"
+      spec:
+        providerID: "hcloud://{{ hcloud_server_map[item] }}"
+  loop: "{{ groups['k3s'] | default([]) }}"
+  when: item in hcloud_server_map
+  register: hcloud_providerid_result
+  failed_when: false
+
+- name: Wait for CCM to reconcile LoadBalancer targets
+  ansible.builtin.pause:
+    seconds: 15
+  when: >-
+    hcloud_providerid_result is defined and
+    hcloud_providerid_result.results is defined and
+    (hcloud_providerid_result.results | selectattr('change', 'defined') | list | length) > 0

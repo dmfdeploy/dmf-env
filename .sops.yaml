@@ -1,0 +1,12 @@
+# SOPS configuration for DMF bootstrap secrets bundle.
+#
+# New-layout (operator-local) envs use per-env .sops.yaml at ~/.dmfdeploy/envs/<env>/.sops.yaml
+# with co-located creation_rules matching the bundle.sops.yaml path.
+#
+# Legacy per-env creation_rules were retired with the ADR-0035 environment lifecycle refactor
+# (Phase 8 cleanup, 2026-06-01). Existing bundles are no longer re-encrypted via this config.
+#
+# The corresponding private key must live at ~/.config/sops/age/keys.txt
+# (or the path in $SOPS_AGE_KEY_FILE), mode 0600, outside any git tree.
+---
+creation_rules: []

@@ -1,0 +1,88 @@
+*.retry
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# macOS metadata
+.DS_Store
+.DS_Store?
+._*
+.AppleDouble
+.LSOverride
+Icon
+Icon?
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+__MACOSX/
+
+# Editor / local workspace noise
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+*.log
+
+# OpenTofu / Terraform — state lives on JuiceFS, never in git.
+# .terraform.lock.hcl IS committed (provider version pinning).
+terraform/*/terraform.tfstate
+terraform/*/terraform.tfstate.backup
+terraform/*/terraform.tfstate.*.backup
+terraform/*/.terraform/
+# Saved plans embed variable values (incl. sensitive ones) — never commit them.
+terraform/*/plan.bin
+*.tfplan
+plan.bin
+
+# Per-env tofu apply outputs and local throwaway secrets live under
+# ~/.dmfdeploy/envs/ and are never committed (outside any git tree).
+
+# === Secrets-prevention baseline (DMF Platform 2026-05-07) ===
+# Patterns that should never be committed across any DMF Platform repo.
+# Repo-specific rules belong above this block; add new shared rules here.
+
+# Kubeconfigs
+*.kubeconfig
+kubeconfig
+kube.config
+
+# Terraform / OpenTofu state
+*.tfstate
+*.tfstate.*
+.terraform/
+
+# Cryptographic material
+*.pem
+*.key
+*.p12
+*.pfx
+
+# OpenBao / Vault tokens + key shares
+openbao-keys*.json
+openbao-keys*.hcl
+.bao-token
+.vault-token
+
+# Ansible secrets
+*.retry
+.vault_pass
+vault_pass
+
+# Env files / generic secrets
+.env
+.env.*
+.netrc
+secret_id
+secret_id.*

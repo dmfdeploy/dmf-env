@@ -1,0 +1,60 @@
+---
+# Provider-specific task: Hetzner Cloud Firewall
+# Manages the network-level firewall via hcloud CLI (runs from localhost).
+# Applied to all servers with label cluster=dmf-infra before OS-level nftables.
+#
+# Activated by setting in group_vars:
+#   harden_cloud_firewall_tasks: "{{ inventory_dir }}/../../tasks/hetzner_firewall.yml"
+
+- name: Check if Hetzner firewall already exists
+  ansible.builtin.command:
+    cmd: hcloud firewall describe k3s-nodes --output json
+  register: hcloud_fw_check
+  failed_when: false
+  changed_when: false
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Create Hetzner Cloud Firewall
+  ansible.builtin.command:
+    cmd: hcloud firewall create --name k3s-nodes
+  when: hcloud_fw_check.rc != 0
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Build firewall rules file
+  ansible.builtin.template:
+    src: "{{ inventory_dir }}/../../templates/hcloud_firewall_rules.json.j2"
+    dest: /tmp/k3s_hcloud_fw_rules.json
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Apply firewall rules
+  ansible.builtin.command:
+    cmd: hcloud firewall replace-rules --rules-file /tmp/k3s_hcloud_fw_rules.json k3s-nodes
+  changed_when: true
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Remove temp rules file
+  ansible.builtin.file:
+    path: /tmp/k3s_hcloud_fw_rules.json
+    state: absent
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Apply firewall to all cluster servers
+  ansible.builtin.command:
+    cmd: hcloud firewall apply-to-resource k3s-nodes --type label_selector --label-selector cluster=dmf-infra
+  register: fw_apply
+  failed_when: fw_apply.rc != 0 and 'already' not in fw_apply.stderr
+  changed_when: "'already' not in fw_apply.stderr"
+  delegate_to: localhost
+  become: false
+  run_once: true

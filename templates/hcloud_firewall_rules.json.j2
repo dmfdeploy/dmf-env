@@ -1,0 +1,28 @@
+[
+  {
+    "direction": "in",
+    "protocol": "icmp",
+    "source_ips": ["0.0.0.0/0", "::/0"],
+    "description": "Allow ICMP from anywhere"
+  },
+  {
+    "direction": "in",
+    "protocol": "tcp",
+    "port": "22",
+    "source_ips": [
+      {% for ip in harden_ssh_allow_ipv4 %}"{{ ip }}"{% if not loop.last or harden_ssh_allow_ipv6 %},{% endif %}
+      {% endfor %}
+      {% for ip in harden_ssh_allow_ipv6 %}"{{ ip }}"{% if not loop.last %},{% endif %}
+      {% endfor %}
+    ],
+    "description": "SSH from allowed sources only"
+  }{% for port in harden_public_tcp_ports %},
+  {
+    "direction": "in",
+    "protocol": "tcp",
+    "port": "{{ port }}",
+    "source_ips": ["0.0.0.0/0", "::/0"],
+    "description": "Allow TCP {{ port }} from anywhere (VIP traffic)"
+  }{% endfor %}
+
+]

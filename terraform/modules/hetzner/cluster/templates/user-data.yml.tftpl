@@ -1,0 +1,9 @@
+#cloud-config
+users:
+  - name: ${admin_user}
+    groups: sudo
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    ssh_authorized_keys:
+      - ${ssh_public_key}
+      - ${awx_ssh_public_key}
