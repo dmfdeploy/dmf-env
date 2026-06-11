@@ -114,11 +114,20 @@ require_age_key() {
   fi
 
   local perms
-  perms="$(stat -f '%Lp' "${AGE_KEY_FILE}" 2>/dev/null || stat -c '%a' "${AGE_KEY_FILE}" 2>/dev/null || echo "unknown")"
+  perms="$(age_key_perms || echo "unknown")"
   if [ "${perms}" != "600" ] && [ "${perms}" != "0600" ]; then
     echo "WARNING: age key file permissions are ${perms} (should be 0600)" >&2
     echo "  chmod 600 ${AGE_KEY_FILE}" >&2
   fi
+}
+
+# Octal permission bits of the age key file. GNU coreutils form (-c) must come
+# first: GNU stat treats `-f '%Lp'` as "filesystem-status these operands" and
+# dumps a multi-line block to stdout even though it exits non-zero, which
+# poisons the command substitution at the call sites. BSD/macOS stat rejects
+# -c cleanly on stderr with nothing on stdout, so GNU-first is safe both ways.
+age_key_perms() {
+  stat -c '%a' "${AGE_KEY_FILE}" 2>/dev/null || stat -f '%Lp' "${AGE_KEY_FILE}" 2>/dev/null
 }
 
 age_public_key() {
@@ -564,11 +573,16 @@ cmd_doctor() {
   # Age key available
   check "age private key available" test -f "${AGE_KEY_FILE}"
 
-  # Age key permissions
+  # Age key permissions. perms_ok wraps the two accepted spellings in one
+  # predicate: `check` always returns 0 (it records the result itself), so a
+  # `check ... || check ...` chain would never reach the second alternative.
+  perms_ok() {
+    [ "$1" = "600" ] || [ "$1" = "0600" ]
+  }
   if [ -f "${AGE_KEY_FILE}" ]; then
     local perms
-    perms="$(stat -f '%Lp' "${AGE_KEY_FILE}" 2>/dev/null || stat -c '%a' "${AGE_KEY_FILE}" 2>/dev/null || echo "999")"
-    check "age key permissions 0600" [ "${perms}" = "600" ] || check "age key permissions 0600" [ "${perms}" = "0600" ]
+    perms="$(age_key_perms || echo "999")"
+    check "age key permissions 0600" perms_ok "${perms}"
   fi
 
   results+=("  INFO: layout=${DMF_ENV_LAYOUT}, bundle=${DMF_ENV_BUNDLE_FILE}")
