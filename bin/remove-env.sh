@@ -191,6 +191,12 @@ fi
 # ─────────────────────────────────────────────────────────────
 # Step 2: Delete Hetzner SSH key (if cloud)
 # ─────────────────────────────────────────────────────────────
+# NOTE: This step fires on any cloud-manifest env (has manifest.yaml),
+# regardless of whether TF state exists. This is intentional: the key is
+# terraform-managed, but if TF state is lost while the key persists in
+# Hetzner (e.g. partial manual cleanup), this provides an orphaned-key
+# safety net. The hcloud delete call is idempotent (|| true → "not found").
+# See: dmfdeploy#20
 
 if ! is_sandbox; then
   echo "==> Step 2: Deleting Hetzner SSH key..."
