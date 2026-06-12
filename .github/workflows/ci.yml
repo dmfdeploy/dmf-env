@@ -89,6 +89,12 @@ jobs:
       - name: bundle-set-roundtrip
         run: |
           bash tests/bundle-set-roundtrip.sh
+      - name: remove-env-sandbox-noop
+        run: |
+          bash tests/remove-env-sandbox-noop.sh
+      - name: remove-env-data-root
+        run: |
+          bash tests/remove-env-data-root.sh
 
   working-model:
     # Working-model block sync (umbrella issue dmfdeploy/dmfdeploy#32): the
