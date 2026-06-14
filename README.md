@@ -5,7 +5,7 @@ This repo holds only reusable, non-secret tooling: wrapper scripts (`bin/`),
 OpenTofu roots/modules (`terraform/`), and neutral task/template includes. It
 pairs with [`dmf-infra`](https://github.com/dmfdeploy/dmf-infra) (generic Ansible roles/playbooks).
 
-> **No environment data lives here.** Per ADR-0035 every environment (cloud or
+> **No environment data lives here.** Per [ADR-0035](https://github.com/dmfdeploy/dmfdeploy/blob/main/docs/decisions/0035-operator-local-self-contained-envs.md) every environment (cloud or
 > sandbox) is entirely **operator-local** under `~/.dmfdeploy/envs/<env>/` —
 > inventory, manifest, encrypted secrets bundle, per-env SSH keypair, and
 > OpenTofu state. Nothing per-env is ever committed to this repo. Tearing an
@@ -66,6 +66,12 @@ Live env ids rotate; the current id (if any) is recorded in the umbrella's
 `STATUS.md`, not in this repo.
 
 ## Quick start
+
+> **Run from the workspace checkout.** These commands assume `dmf-env` sits
+> beside its sibling repos in the umbrella workspace (`dmf-infra`, `dmf-init`,
+> …) — that sibling layout is what lets the `../dmf-infra/…` playbook paths
+> resolve. Playbooks always run through `bin/run-playbook.sh`, the sanctioned
+> `ansible-playbook` entry point ([ADR-0010](https://github.com/dmfdeploy/dmfdeploy/blob/main/docs/decisions/0010-run-playbook-as-sanctioned-entry.md)).
 
 ### Sandbox (the v0.1 release gate)
 
