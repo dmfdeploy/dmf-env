@@ -3,7 +3,7 @@
 Generic **environment provisioning + bootstrap tooling** for the DMF Platform.
 This repo holds only reusable, non-secret tooling: wrapper scripts (`bin/`),
 OpenTofu roots/modules (`terraform/`), and neutral task/template includes. It
-pairs with [`dmf-infra`](../dmf-infra) (generic Ansible roles/playbooks).
+pairs with [`dmf-infra`](https://github.com/dmfdeploy/dmf-infra) (generic Ansible roles/playbooks).
 
 > **No environment data lives here.** Per ADR-0035 every environment (cloud or
 > sandbox) is entirely **operator-local** under `~/.dmfdeploy/envs/<env>/` —
