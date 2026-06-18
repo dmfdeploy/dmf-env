@@ -5,6 +5,8 @@ This repo holds only reusable, non-secret tooling: wrapper scripts (`bin/`),
 OpenTofu roots/modules (`terraform/`), and neutral task/template includes. It
 pairs with [`dmf-infra`](https://github.com/dmfdeploy/dmf-infra) (generic Ansible roles/playbooks).
 
+> **New to the project vocabulary?** See the [DMF Glossary](https://github.com/dmfdeploy/dmfdeploy/blob/main/docs/GLOSSARY.md) for project-coined terms (env, sandbox / hetzner provider, age key, …).
+
 > **No environment data lives here.** Per [ADR-0035](https://github.com/dmfdeploy/dmfdeploy/blob/main/docs/decisions/0035-operator-local-self-contained-envs.md) every environment (cloud or
 > sandbox) is entirely **operator-local** under `~/.dmfdeploy/envs/<env>/` —
 > inventory, manifest, encrypted secrets bundle, per-env SSH keypair, and
