@@ -148,7 +148,7 @@ materialize_ssh_privkeys
 # - Default cap depends on the target:
 #     * ordinary playbooks:   900s
 #     * lifecycle-*.yml:      1800s
-#     * site.yml:             5400s
+#     * site.yml:             7200s
 # - Output is tee'd: operators still see progress live in the terminal.
 LOG_DIR="/tmp/dmf-playbook-logs"
 mkdir -p "$LOG_DIR"
@@ -161,7 +161,7 @@ if [ -n "${RUNBOOK_TIMEOUT:-}" ]; then
 else
   case "$(basename "$PLAYBOOK")" in
     site.yml|site.yaml)
-      TIMEOUT_SEC=5400
+      TIMEOUT_SEC=7200
       ;;
     lifecycle-*.yml|lifecycle-*.yaml)
       TIMEOUT_SEC=1800
