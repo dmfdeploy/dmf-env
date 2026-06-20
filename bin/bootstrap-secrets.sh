@@ -1499,19 +1499,49 @@ print(data.get('data', {}).get('data', {}).get('bearer_token', ''))
       exit 1
     fi
   else
-    local bearer
-    bearer="$(gen_secret 48 64)"
-    echo "  Writing ${awx_autoscale_path} (bearer_token)..." >&2
-    printf '%s\n%s\n' "${BAO_ROOT_TOKEN}" "${bearer}" | \
-      remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
-        IFS= read -r BAO_TOKEN
-        export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
-        IFS= read -r BEARER
-        bao kv put secret/apps/awx-autoscale/runtime bearer_token="${BEARER}"
-      ' || {
-      echo "ERROR: failed to write ${awx_autoscale_path}" >&2
+    # bao_kv_get returns empty for BOTH "not found" and a transient read
+    # failure (it runs `bao kv get 2>/dev/null` and swallows the exit code).
+    # Generating on a false "absent" would rotate the token out from under a
+    # live dmf-cms/helper. Prove genuine absence before generating, in two
+    # steps:
+    #   1. Confirm reads work at all — read back a sentinel we wrote earlier
+    #      this run (secret/platform/bootstrap_admin). Empty => reads broken =>
+    #      fail closed.
+    #   2. Re-read the awx-autoscale path itself. If a bearer now appears the
+    #      first read was a transient blip => no-op. Only a confirmed-empty
+    #      re-read (with reads proven working) counts as genuinely absent.
+    if [ -z "$(bao_kv_get secret/platform/bootstrap_admin)" ]; then
+      echo "ERROR: ${awx_autoscale_path} read empty AND the sentinel" >&2
+      echo "  secret/platform/bootstrap_admin is also unreadable — OpenBao reads" >&2
+      echo "  appear broken. Refusing to (re)generate the bearer token (it would" >&2
+      echo "  rotate under a live dmf-cms). Fix OpenBao access, then rerun seed-bao." >&2
       exit 1
-    }
+    fi
+    local reread_awx_autoscale_bearer
+    reread_awx_autoscale_bearer="$(bao_kv_get "${awx_autoscale_path}" | python3 -c "
+import json, sys
+try:
+    print(json.load(sys.stdin).get('data', {}).get('data', {}).get('bearer_token', ''))
+except Exception:
+    print('')
+" 2>/dev/null)" || reread_awx_autoscale_bearer=""
+    if [ -n "${reread_awx_autoscale_bearer}" ]; then
+      echo "  ${awx_autoscale_path}: bearer_token present on re-read (first read was transient), no-op" >&2
+    else
+      local bearer
+      bearer="$(gen_secret 48 64)"
+      echo "  Writing ${awx_autoscale_path} (bearer_token)..." >&2
+      printf '%s\n%s\n' "${BAO_ROOT_TOKEN}" "${bearer}" | \
+        remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
+          IFS= read -r BAO_TOKEN
+          export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
+          IFS= read -r BEARER
+          bao kv put secret/apps/awx-autoscale/runtime bearer_token="${BEARER}"
+        ' || {
+        echo "ERROR: failed to write ${awx_autoscale_path}" >&2
+        exit 1
+      }
+    fi
   fi
 
   # Write object-storage paths
