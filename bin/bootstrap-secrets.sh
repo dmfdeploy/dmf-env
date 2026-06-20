@@ -1476,6 +1476,44 @@ print(data.get('data', {}).get('data', {}).get('username', ''))
     }
   fi
 
+  # ── AWX autoscale internal bearer token (ADR-0008) ────────────────────────
+  # The awx-autoscale helper validates POST /ensure-awake against this token;
+  # dmf-cms sends it as the Authorization bearer. ESO materializes it from
+  # secret/apps/awx-autoscale/runtime into the helper's pod env (ADR-0008).
+  # NOT the awx_svc_token written by the awx-integration role 693.
+  # Seed-once: never regenerate — rotation breaks dmf-cms/helper auth mid-flight.
+  local awx_autoscale_path="secret/apps/awx-autoscale/runtime"
+  local existing_awx_autoscale existing_awx_autoscale_bearer
+  existing_awx_autoscale="$(bao_kv_get "${awx_autoscale_path}")" || existing_awx_autoscale=""
+  if [ -n "${existing_awx_autoscale}" ]; then
+    existing_awx_autoscale_bearer="$(echo "${existing_awx_autoscale}" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+print(data.get('data', {}).get('data', {}).get('bearer_token', ''))
+" 2>/dev/null)" || existing_awx_autoscale_bearer=""
+    if [ -n "${existing_awx_autoscale_bearer}" ]; then
+      echo "  ${awx_autoscale_path}: bearer_token present, no-op" >&2
+    else
+      echo "ERROR: ${awx_autoscale_path} exists but bearer_token is empty/missing." >&2
+      echo "  Resolve by hand, then rerun seed-bao." >&2
+      exit 1
+    fi
+  else
+    local bearer
+    bearer="$(gen_secret 48 64)"
+    echo "  Writing ${awx_autoscale_path} (bearer_token)..." >&2
+    printf '%s\n%s\n' "${BAO_ROOT_TOKEN}" "${bearer}" | \
+      remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
+        IFS= read -r BAO_TOKEN
+        export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
+        IFS= read -r BEARER
+        bao kv put secret/apps/awx-autoscale/runtime bearer_token="${BEARER}"
+      ' || {
+      echo "ERROR: failed to write ${awx_autoscale_path}" >&2
+      exit 1
+    }
+  fi
+
   # Write object-storage paths
   for os_logical in audit openbao_snapshots app_backups; do
     local os_bucket os_endpoint os_region os_access_key os_secret_key
