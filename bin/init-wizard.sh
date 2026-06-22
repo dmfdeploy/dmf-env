@@ -1800,6 +1800,11 @@ dmf_headscale_enabled: false
 dmf_tailscale_enabled: false
 dmf_monitoring_profile: minimal
 dmf_awx_profile: single-node-low-concurrency
+# AWX on-demand scale-to-zero + console autowake (#97). The sandbox profile
+# prelude defaults this true, but rendering it into the inventory keeps a
+# STANDALONE 650-dmf-cms run correct too — otherwise the cms role falls back to
+# default(false) and the catalog Deploy buttons can't wake a slept AWX.
+dmf_awx_autoscale_enabled: true
 dmf_sandbox_base_domain: ${BASE_DOMAIN}
 
 # Sandbox-fit monitoring sizing (60 GiB / 4 CPU / 10 GiB Lima VM).
