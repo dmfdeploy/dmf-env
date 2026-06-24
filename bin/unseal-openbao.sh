@@ -182,6 +182,7 @@ SHARE_DIR="${OPENBAO_SHARE_DIR:-${DERIVED_SHARE_DIR:-}}"
 SHARE_KEYCHAIN_NAME="${OPENBAO_KEYCHAIN_SERVICE:-$DERIVED_KEYCHAIN_SVC}"
 SHARE_KEYCHAIN_ACCT="${OPENBAO_KEYCHAIN_ACCOUNT:-share}"
 SHARE_FIELD="${OPENBAO_SHARE_FIELD:-key}"   # JSON field in share-N.json
+
 OPENBAO_API_ADDR="${OPENBAO_API_ADDR:-}"    # Default: https://<pod-ip>:8200 (resolved below)
 OPENBAO_CACERT="${OPENBAO_CACERT:-}"        # Default: -k (insecure, pod cert won't match IP)
 ssh_opts=(-o LogLevel=ERROR)
@@ -299,6 +300,21 @@ case "${OPENBAO_PROFILE:-}" in
     sandbox|sandbox-*) IS_SANDBOX=1 ;;
 esac
 
+# Unseal-key source: split share files (share-1/2.json — the 3-of-5 break-glass
+# layout) OR the single openbao-keys.json that `bao operator init` writes
+# (.unseal_keys_hex[]). Prefer split files. The openbao-keys.json fallback is a
+# SANDBOX construct (1/1 self-unseal) and is gated on sandbox posture: a
+# non-sandbox env missing its split shares must FAIL CLOSED at pre-flight, never
+# silently bypass the 3-of-5 + Keychain quorum by reading raw init keys (#130).
+# Resolved here (after posture is known); validated in pre-flight.
+KEYS_JSON="${OPENBAO_KEYS_JSON:-$SHARE_DIR/openbao-keys.json}"
+SHARE_SOURCE=""
+if [ -r "$SHARE_DIR/share-1.json" ]; then
+    SHARE_SOURCE="share-files"
+elif [ "$IS_SANDBOX" -eq 1 ] && [ -r "$KEYS_JSON" ] && jq -e '(.unseal_keys_hex // empty) | type=="array" and length>0' "$KEYS_JSON" >/dev/null 2>&1; then
+    SHARE_SOURCE="keys-json"
+fi
+
 # macOS Keychain CLI is only needed for non-sandbox (3-of-5 Shamir) profiles.
 if [ "$IS_SANDBOX" -ne 1 ]; then
     require security    # macOS Keychain CLI
@@ -366,38 +382,48 @@ else
     info "  sealed (proceeding)"
 fi
 
-# 3. Share sources reachable
-info "checking share sources..."
-[ -r "$SHARE_DIR/share-1.json" ] || { err "share 1 missing or unreadable: $SHARE_DIR/share-1.json"; exit 3; }
-[ -r "$SHARE_DIR/share-2.json" ] || { err "share 2 missing or unreadable: $SHARE_DIR/share-2.json"; exit 3; }
-if [ "$IS_SANDBOX" -eq 1 ]; then
-    info "  sandbox posture — skipping Keychain share-3 check (1/1 self-unseal)"
-else
-    if ! security find-generic-password -s "$SHARE_KEYCHAIN_NAME" -a "$SHARE_KEYCHAIN_ACCT" >/dev/null 2>&1; then
+# 3. Unseal-key source reachable + valid
+info "checking unseal-key source..."
+case "$SHARE_SOURCE" in
+  share-files)
+    [ -r "$SHARE_DIR/share-2.json" ] || { err "share 1 present but share 2 missing or unreadable: $SHARE_DIR/share-2.json"; exit 3; }
+    for n in 1 2; do
+      if ! jq -e --arg f "$SHARE_FIELD" 'has($f)' "$SHARE_DIR/share-$n.json" >/dev/null 2>&1; then
+        err "share $n at $SHARE_DIR/share-$n.json has no field '.$SHARE_FIELD'"
+        err "  set OPENBAO_SHARE_FIELD env var if the JSON layout differs"
+        exit 3
+      fi
+    done
+    if [ "$IS_SANDBOX" -eq 1 ]; then
+      info "  split share files present (sandbox posture — no Keychain share-3)"
+    else
+      if ! security find-generic-password -s "$SHARE_KEYCHAIN_NAME" -a "$SHARE_KEYCHAIN_ACCT" >/dev/null 2>&1; then
         err "share 3 missing in Keychain: service='$SHARE_KEYCHAIN_NAME' account='$SHARE_KEYCHAIN_ACCT'"
         err "  - has share 3 ever been seeded? See openbao role tasks/main.yml"
         err "  - is the login keychain unlocked?"
         exit 3
+      fi
+      info "  all 3 sources present"
     fi
-    info "  all 3 sources present"
-fi
-
-# 4. Validate JSON files actually contain the field we expect
-info "validating share file format..."
-for n in 1 2; do
-    if ! jq -e --arg f "$SHARE_FIELD" 'has($f)' "$SHARE_DIR/share-$n.json" >/dev/null 2>&1; then
-        err "share $n at $SHARE_DIR/share-$n.json has no field '.$SHARE_FIELD'"
-        err "  set OPENBAO_SHARE_FIELD env var if the JSON layout differs"
-        exit 3
-    fi
-done
+    ;;
+  keys-json)
+    info "  using openbao-keys.json (.unseal_keys_hex) — no split share files present"
+    ;;
+  *)
+    err "no unseal-key source found in $SHARE_DIR"
+    err "  expected one of:"
+    err "    - share-1.json + share-2.json (field '.$SHARE_FIELD')   [3-of-5 break-glass layout]"
+    err "    - openbao-keys.json (.unseal_keys_hex[])                [freshly-initialized sandbox]"
+    exit 3
+    ;;
+esac
 info "  ok"
 
 # ── Confirm ──────────────────────────────────────────────────────────────
 if [ "$IS_SANDBOX" -eq 1 ]; then
     section "Unseal procedure (sandbox 1/1 self-unseal)"
     cat <<EOF
-  sources:   $SHARE_DIR/share-1.json + share-2.json (JuiceFS, .${SHARE_FIELD})
+  source:    $([ "$SHARE_SOURCE" = keys-json ] && echo "$KEYS_JSON (.unseal_keys_hex)" || echo "$SHARE_DIR/share-1.json + share-2.json (.${SHARE_FIELD})")
              (sandbox posture — no Keychain share-3 required)
   target:    $OPENBAO_API_ADDR (pod=$OPENBAO_POD ns=$OPENBAO_NAMESPACE)
   transport: ssh to $SSH_TARGET, curl to pod IP:8200 (node-local, not ingress-exposed)
@@ -444,6 +470,29 @@ info "  curl available on control node"
 # ── Feed shares ──────────────────────────────────────────────────────────
 section "Feeding shares"
 
+if [ "$SHARE_SOURCE" = "keys-json" ]; then
+    # Sandbox / raw-init layout: feed the first t unseal keys from
+    # openbao-keys.json (t = live threshold; 1 for a 1/1 sandbox). Same pipe as
+    # the share-file path: jq stdout -> feed_share_via_stdin stdin -> ssh -> curl.
+    # The key value never enters argv, env, /tmp, or stdout.
+    t="$(remote_bao_status_json | jq -r '.t // 1')"
+    case "$t" in ''|*[!0-9]*) t=1 ;; esac
+    nkeys="$(jq -r '.unseal_keys_hex | length' "$KEYS_JSON")"
+    [ "$t" -le "$nkeys" ] || { err "threshold t=$t exceeds available keys ($nkeys) in $KEYS_JSON"; exit 3; }
+    i=0
+    while [ "$i" -lt "$t" ]; do
+        if [ "$OPENBAO_API_ADDR_USER_SET" -ne 1 ]; then
+            POD_IP="$(resolve_openbao_pod_ip)"
+            [ -n "$POD_IP" ] || { err "could not resolve OpenBao pod IP before key $((i+1))"; exit 4; }
+        else
+            POD_IP=""
+        fi
+        jq -r --argjson i "$i" '.unseal_keys_hex[$i]' "$KEYS_JSON" \
+            | feed_share_via_stdin "key $((i+1))/$t (openbao-keys.json)" "$POD_IP"
+        i=$((i+1))
+    done
+else
+
 # share 1 — resolve pod IP (only if not user-overridden), then feed
 if [ "$OPENBAO_API_ADDR_USER_SET" -ne 1 ]; then
     POD_IP="$(resolve_openbao_pod_ip)"
@@ -488,6 +537,8 @@ else
     security find-generic-password -s "$SHARE_KEYCHAIN_NAME" -a "$SHARE_KEYCHAIN_ACCT" -w \
         | feed_share_via_stdin "share 3 (Keychain)" "$POD_IP"
 fi
+
+fi  # close the share-source if/else
 
 # ── Verify ───────────────────────────────────────────────────────────────
 section "Verification"
