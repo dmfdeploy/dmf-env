@@ -33,6 +33,16 @@ dmf_source_operator_config
 # Ensure we run from repo root
 cd "$REPO_DIR"
 
+# Default the sops age-key location when the operator hasn't set it. sops's
+# macOS default (~/Library/Application Support/...) differs from where the DMF
+# age key lives (~/.config/sops/age/keys.txt); without this, an unset
+# SOPS_AGE_KEY_FILE silently decrypts the env bundle to empty and the downstream
+# json.load crashes. Guarded on file existence so it is a no-op when the key is
+# absent or the operator set their own. (umbrella #125)
+if [ -z "${SOPS_AGE_KEY_FILE:-}" ] && [ -f "$HOME/.config/sops/age/keys.txt" ]; then
+  export SOPS_AGE_KEY_FILE="$HOME/.config/sops/age/keys.txt"
+fi
+
 print_envs_and_die() {
   local msg="$1"
   echo "$msg" >&2
