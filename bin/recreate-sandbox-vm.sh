@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 # recreate-sandbox-vm.sh — (re)create the WP1S sandbox Lima VM substrate.
 #
+# PLATFORM: macOS + Lima ONLY — a maintainer convenience, NOT the paved
+# onboarding path. It hard-requires limactl/Lima (vmType vz, socket_vmnet on
+# en0) and produces a node whose SSH user / interface are `lima` / `lima0`.
+# The substrate-agnostic path is to bring any SSH-reachable Debian 12/13 ARM64
+# node (works from any operator OS) and answer the dmf-init wizard's Target-node
+# fields for that node — Node IP, Ansible user (root, or the image default such
+# as debian), Interface (eth0/ens3/…). See dmfdeploy/dmfdeploy#81.
+#
 # VM-FIRST, env-agnostic. This script rebuilds ONLY the Lima Debian-12 VM
 # substrate and emits its bridged LAN IP. It does NOT assume any particular
 # env id. Two modes:
