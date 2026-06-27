@@ -172,7 +172,10 @@ if [ -z "$SSH_TARGET" ]; then
     err "SSH target not resolvable for env '${ENV_NAME}'"
     err "set OPENBAO_SSH_TARGET=k3s-admin@<control-node-ip> or"
     err "ensure $HOSTS_INI yields a parseable ansible_host"
-    exit 2
+    # Config error, not "already unsealed" — exit 1, never 2. Callers treat 2 as
+    # success ("already unsealed"); reusing it here let an unresolved inventory be
+    # mistaken for a no-op unseal (dmf-init bao-preflight false-success). (ADR-0044.)
+    exit 1
 fi
 SSH_KEY="${OPENBAO_SSH_KEY:-${DERIVED_SSH_KEY:-}}"
 OPENBAO_NAMESPACE="${OPENBAO_NAMESPACE:-openbao}"
