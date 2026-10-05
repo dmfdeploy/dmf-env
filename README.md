@@ -1,5 +1,7 @@
 # dmf-env
 
+[![CI](https://github.com/dmfdeploy/dmf-env/actions/workflows/ci.yml/badge.svg)](https://github.com/dmfdeploy/dmf-env/actions/workflows/ci.yml)
+
 Generic **environment provisioning + bootstrap tooling** for the DMF Platform.
 This repo holds only reusable, non-secret tooling: wrapper scripts (`bin/`),
 OpenTofu roots/modules (`terraform/`), and neutral task/template includes. It
