@@ -1,9 +1,38 @@
-# AGENTS — dmf-env
+# AGENTS.md — dmf-env
 
-Generic environment tooling for the DMF Platform — wizard, OpenTofu modules, `bin/` scripts; per-env state is operator-local (ADR-0035). See README.md and CLAUDE.md for repo specifics; cross-repo context —
-status, decisions, plans — lives in the
-[dmfdeploy umbrella repo](https://github.com/dmfdeploy/dmfdeploy), checked out
-as a sibling directory of this repo.
+This repo holds the generic environment tooling of the dmfdeploy platform:
+the init wizard, OpenTofu modules (`terraform/`), `bin/` wrappers, and neutral
+`tasks/` and `templates/`. Providers are sandbox and hetzner. No environment
+data lives here: every env is operator-local (ADR-0035; see `README.md`).
+Cross-repo status, decisions and plans live in the
+[dmfdeploy umbrella repo](https://github.com/dmfdeploy/dmfdeploy).
+
+## Boot steps
+
+1. In the umbrella repo, run `git pull` and `bin/generate-status.sh`, then read
+   `STATUS.digest.local.md`.
+2. Skim the umbrella `docs/decisions/INDEX.md` and apply any ADR that fits.
+3. Post notes that others need to the pinned umbrella issue
+   [#618](https://github.com/dmfdeploy/dmfdeploy/issues/618).
+
+## Build and test
+
+- Shell lint: `shellcheck -S error bin/*.sh`
+- OpenTofu: `tofu fmt -check -recursive terraform/hetzner terraform/modules/hetzner/cluster`, then `tofu init -backend=false && tofu validate` in each of those two directories.
+- Tests: `bash tests/<name>.sh` for each script in `tests/`. They are hermetic and skip when `sops`, `age` or `jq` is missing.
+
+## Rules that are easy to miss
+
+- Run Ansible only through `bin/run-playbook.sh <env> <playbook>` (ADR-0010).
+  It injects secrets through a temporary vars file and removes it. Never run
+  `ansible-playbook` directly from an agent session.
+- Do not run `bin/get-admin-cred.sh` through an agent. It prints credentials to
+  stdout, so run it in your own terminal (ADR-0007).
+- `bin/tf-apply.sh` and `bin/tf-destroy.sh` work for hetzner only and refuse sandbox.
+- `bin/unseal-openbao.sh --status` checks state. A full unseal needs a human for the share prompt.
+- Secrets stay in OpenBao. Never commit, track or echo credentials.
+- Use placeholder values in docs you add: no real IPs, DNS names or operator identifiers.
+- Before you retrieve secrets, run cluster operations or release, read section 0 of the matching skill in the umbrella `.agents/skills/`.
 
 <!-- WORKING-MODEL-BLOCK-START — generated from umbrella docs/templates/working-model-block.md; do not edit copies, edit the template and run bin/check-working-model-sync.sh -->
 ## Working model (mandatory)
@@ -26,4 +55,3 @@ in the umbrella repo. The three rules that matter mid-task:
    liveness; plan frontmatter = design state; ADRs = decisions (RFC in
    Discussions first); STATUS.md = committed notes; STATUS.local.md = live repo snapshot.
 <!-- WORKING-MODEL-BLOCK-END -->
-
