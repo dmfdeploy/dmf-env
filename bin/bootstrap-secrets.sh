@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# bootstrap-secrets.sh — manage pre-Bao bootstrap secrets for DMF platform.
+# bootstrap-secrets.sh — manage pre-Bao bootstrap secrets for dmfdeploy platform.
 #
 # Subcommands:
 #   init <env>                    — create or update encrypted bundle
