@@ -2,7 +2,10 @@
 
 [![CI](https://github.com/dmfdeploy/dmf-env/actions/workflows/ci.yml/badge.svg)](https://github.com/dmfdeploy/dmf-env/actions/workflows/ci.yml)
 
-Generic **environment provisioning + bootstrap tooling** for the DMF Platform.
+**Environment provisioning and bootstrap tooling** for the dmfdeploy platform: wrapper scripts, OpenTofu roots and templates.
+
+Part of [dmfdeploy](https://github.com/dmfdeploy/dmfdeploy), an independent open prototype that explores the ideas of the EBU Dynamic Media Facility on commodity infrastructure. Status: prototype, single-node sandbox.
+
 This repo holds only reusable, non-secret tooling: wrapper scripts (`bin/`),
 OpenTofu roots/modules (`terraform/`), and neutral task/template includes. It
 pairs with [`dmf-infra`](https://github.com/dmfdeploy/dmf-infra) (generic Ansible roles/playbooks).
@@ -10,7 +13,7 @@ pairs with [`dmf-infra`](https://github.com/dmfdeploy/dmf-infra) (generic Ansibl
 > **New to the project vocabulary?** See the [DMF Glossary](https://github.com/dmfdeploy/dmfdeploy/blob/main/docs/GLOSSARY.md) for project-coined terms (env, sandbox / hetzner provider, age key, …).
 
 > **No environment data lives here.** Per [ADR-0035](https://github.com/dmfdeploy/dmfdeploy/blob/main/docs/decisions/0035-operator-local-self-contained-envs.md) every environment (cloud or
-> sandbox) is entirely **operator-local** under `~/.dmfdeploy/envs/<env>/` —
+> sandbox) is entirely **operator-local** under `~/.dmfdeploy/envs/<env>/`:
 > inventory, manifest, encrypted secrets bundle, per-env SSH keypair, and
 > OpenTofu state. Nothing per-env is ever committed to this repo. Tearing an
 > env down is one `rm -rf ~/.dmfdeploy/envs/<env>`.
@@ -19,11 +22,11 @@ pairs with [`dmf-infra`](https://github.com/dmfdeploy/dmf-infra) (generic Ansibl
 
 | Provider | Use |
 |---|---|
-| `sandbox` | single-node deploy for local experimentation — a Lima VM on macOS, multipass/KVM on Linux, WSL2 on Windows, or any cheap VPS reachable over SSH. The v0.1 release gate. |
+| `sandbox` | single-node deploy for local experimentation: a Lima VM on macOS, multipass/KVM on Linux, WSL2 on Windows, or any cheap VPS reachable over SSH. The v0.1 release gate. |
 | `hetzner` | cloud ARM64 cluster via OpenTofu (`terraform/hetzner` + `terraform/modules/hetzner`). |
 
 Secrets are produced or fetched by the `bin/` wrappers immediately before each
-`ansible-playbook` / `tofu` run — never stored in the repo.
+`ansible-playbook` / `tofu` run; never stored in the repo.
 
 ## Layout
 
@@ -66,15 +69,12 @@ wizard, never committed):
     ssh/                     per-env keypair (private key lives in the sops bundle)
 ```
 
-Live env ids rotate; the current id (if any) is recorded in the umbrella's
-`STATUS.md`, not in this repo.
-
 ## Quick start
 
-> **Run from the workspace checkout.** These commands assume `dmf-env` sits
-> beside its sibling repos in the umbrella workspace (`dmf-infra`, `dmf-init`,
-> …) — that sibling layout is what lets the `../dmf-infra/…` playbook paths
-> resolve. Playbooks always run through `bin/run-playbook.sh`, the sanctioned
+> **Check out the sibling repos first.** These commands expect `dmf-env` to sit
+> next to a checkout of [`dmf-infra`](https://github.com/dmfdeploy/dmf-infra)
+> (and the other component repos) in the same parent directory. That layout is
+> what lets the `../dmf-infra/…` playbook paths resolve. Playbooks always run through `bin/run-playbook.sh`, the sanctioned
 > `ansible-playbook` entry point ([ADR-0010](https://github.com/dmfdeploy/dmfdeploy/blob/main/docs/decisions/0010-run-playbook-as-sanctioned-entry.md)).
 
 ### Sandbox (the v0.1 release gate)
@@ -123,7 +123,7 @@ See `terraform/README.md` for the OpenTofu (Layer-1) detail.
 
 - macOS / Linux: `$HOME/.dmfdeploy/` is honoured natively.
 - Windows: run the wizard under **WSL2** or **Git Bash**, using the POSIX home
-  (`$HOME`). Don't point bash at a DrvFS mount — it drops `chmod 0600` semantics.
+  (`$HOME`). Don't point bash at a DrvFS mount. It drops it drops `chmod 0600` semantics.
 - All path operations use `${HOME}` + POSIX `mkdir -p` / `install -d` / `chmod`.
   In sandbox mode no OS keychain is touched
   (`openbao_breakglass_distribution_enabled: false`).
@@ -160,6 +160,10 @@ The wrapper writes a temp JSON of `vault_*` keys injected with `-e @file`.
 | `alertmanager_ntfy_url` | Alertmanager primary receiver |
 | `alertmanager_watchdog_url` | dead-man's-switch receiver |
 
+## For contributors
+
+`AGENTS.md`, `CLAUDE.md` and `QWEN.md` hold instructions for AI coding agents that help maintain this repository. Human contributors can skip them and start with [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## License
 
-Apache 2.0 — see `LICENSE` (added at first public release).
+Apache 2.0. See see [`LICENSE`](LICENSE).
