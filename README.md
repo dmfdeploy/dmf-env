@@ -123,7 +123,7 @@ See `terraform/README.md` for the OpenTofu (Layer-1) detail.
 
 - macOS / Linux: `$HOME/.dmfdeploy/` is honoured natively.
 - Windows: run the wizard under **WSL2** or **Git Bash**, using the POSIX home
-  (`$HOME`). Don't point bash at a DrvFS mount. It drops it drops `chmod 0600` semantics.
+  (`$HOME`). Don't point bash at a DrvFS mount. It drops `chmod 0600` semantics.
 - All path operations use `${HOME}` + POSIX `mkdir -p` / `install -d` / `chmod`.
   In sandbox mode no OS keychain is touched
   (`openbao_breakglass_distribution_enabled: false`).
@@ -166,4 +166,4 @@ The wrapper writes a temp JSON of `vault_*` keys injected with `-e @file`.
 
 ## License
 
-Apache 2.0. See see [`LICENSE`](LICENSE).
+Apache 2.0. See [`LICENSE`](LICENSE).
