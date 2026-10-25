@@ -12,12 +12,30 @@
 # fails. An allowlist entry that no longer matches any hit also fails, so the
 # list shrinks as the lines it covers go away.
 #
-# Python docstrings are checked too: a docstring has no comment leader, so its
-# lines are matched on the markers alone. They are found with Python's ast
-# module, which needs python3 whenever a tracked *.py file is in scope; the
-# check fails rather than skip them. A docstring line is reported and
-# allowlisted as <path>:<line> like any other. Ordinary string literals (log
-# messages, error text) are data, not commentary, and are not scanned.
+# Comment syntaxes covered, by file extension. Nothing else is claimed.
+#
+#   per-line leaders  #  //  --  *   any tracked file in scope; a marker must
+#                                    follow the leader on the same line
+#   docstrings        *.py           module, class and function docstrings
+#   /* ... */         *.ts *.tsx *.js *.jsx *.cjs *.mjs *.css *.scss *.tf
+#                     *.tfvars (string-aware); *.html *.htm *.svg *.vue
+#                     (not string-aware)
+#   <!-- ... -->      *.html *.htm *.svg *.vue *.xml *.bpmn *.j2 *.jinja
+#   {# ... #}         *.html *.htm *.j2 *.jinja *.jinja2
+#   {{/* ... */}}     *.tpl *.tftpl *.yaml *.yml, also as {{- /* ... */ -}}
+#
+# A docstring or block comment has no leader on its interior lines, so every
+# line from the opening delimiter to the closing one is matched on the
+# markers alone and reported as <path>:<line>; the allowlist covers it the
+# same way. These need python3 whenever a file with one of those extensions is
+# tracked, and the check fails rather than skip them. Where a delimiter could
+# sit inside a string, the scanners for JavaScript, TypeScript, CSS and
+# Terraform skip strings; the others do not, so they can report a delimiter
+# inside a string, never miss a comment.
+#
+# Out of scope: ordinary string literals (log and error text are data),
+# Markdown, lockfiles and generated or minified files (see the excludes), and
+# any syntax or extension not listed above.
 #
 # Allowlist format (.review-comment-allow at the repo root), one entry per
 # line, blank lines and lines starting with # ignored:
@@ -107,23 +125,39 @@ self_test() {
   run_case "missing reason separator"  fail 'malformed' 'src/app.py:round 2 by codex'
 
 
-  # Docstring cases. Each plants one Python file and nothing else.
+  # Comment cases without a per-line leader. Each plants one file and nothing
+  # else. The marker sits on an interior line, where no leader precedes it.
   git -C "$tmp" rm -q -f src/app.py
-  # run_py <name> <want> <expect> <allowlist> <file body>
-  run_py() {
-    mkdir -p "$tmp/src"
-    printf '%s' "$5" > "$tmp/src/doc.py"
-    git -C "$tmp" add src/doc.py
+  # run_file <name> <want> <expect> <allowlist> <path> <file body>
+  run_file() {
+    git -C "$tmp" rm -q -r -f --ignore-unmatch -- . >/dev/null
+    mkdir -p "$tmp/$(dirname "$5")"
+    printf '%s' "$6" > "$tmp/$5"
+    git -C "$tmp" add "$5"
     run_case "$1" "$2" "$3" "$4"
   }
   local multi=$'def f():\n    """Return one.\n\n    Added in fix round 3 so callers retry.\n    """\n    return 1\n'
-  run_py "module docstring"        fail 'src/doc.py,line=1' '' $'"""Notes: codex round 7 required this."""\nx = 1\n'
-  run_py "function docstring"      fail 'src/doc.py,line=2' '' $'def f():\n    """Return one; lkirc asked for this."""\n    return 1\n'
-  run_py "class docstring"         fail 'src/doc.py,line=2' '' $'class C:\n    """Holds state, per the work order."""\n'
-  run_py "continuation line"       fail 'src/doc.py,line=4' '' "$multi"
-  run_py "allowlisted docstring"   pass 'OK \(1 allowlisted\)' 'src/doc.py:fix round 3 so callers retry  # example reason' "$multi"
-  run_py "plain string literal"    pass 'OK \(0 allowlisted\)' '' $'msg = "codex round 7 failed"\nprint(msg)\n'
-  run_py "unparsable python"       fail 'cannot parse' '' $'def (\n'
+  local inner=$'codex round 7 required this\n'
+  run_file "py module docstring"   fail 'src/doc.py,line=1' '' src/doc.py $'"""Notes: codex round 7 required this."""\nx = 1\n'
+  run_file "py function docstring" fail 'src/doc.py,line=2' '' src/doc.py $'def f():\n    """Return one; lkirc asked for this."""\n    return 1\n'
+  run_file "py class docstring"    fail 'src/doc.py,line=2' '' src/doc.py $'class C:\n    """Holds state, per the work order."""\n'
+  run_file "py continuation line"  fail 'src/doc.py,line=4' '' src/doc.py "$multi"
+  run_file "py allowlisted docstring" pass 'OK \(1 allowlisted\)' 'src/doc.py:fix round 3 so callers retry  # example reason' src/doc.py "$multi"
+  run_file "py plain string literal" pass 'OK \(0 allowlisted\)' '' src/doc.py $'msg = "codex round 7 failed"\nprint(msg)\n'
+  run_file "py unparsable"         fail 'cannot parse' '' src/doc.py $'def (\n'
+  run_file "ts /* */ interior"     fail 'src/a.ts,line=3' '' src/a.ts $'/*\n * Notes.\n'"$inner"$' */\nexport const x = 1;\n'
+  run_file "tsx {/* */} interior"  fail 'src/a.tsx,line=3' '' src/a.tsx $'export const A = () => (\n  <div>{/*\n'"$inner"$'  */}</div>\n);\n'
+  run_file "css /* */ interior"    fail 'src/a.css,line=2' '' src/a.css $'/*\n'"$inner"$'*/\n.a { color: red; }\n'
+  run_file "html <!-- --> interior" fail 'page.html,line=2' '' page.html $'<!--\n'"$inner"$'-->\n<p>x</p>\n'
+  run_file "html {# #} interior"   fail 'page.html,line=2' '' page.html $'{#\n'"$inner"$'#}\n<p>x</p>\n'
+  run_file "j2 {# #} interior"     fail 'conf.j2,line=2' '' conf.j2 $'{#\n'"$inner"$'#}\nkey: value\n'
+  run_file "svg <!-- --> interior" fail 'img.svg,line=2' '' img.svg $'<!--\n'"$inner"$'-->\n<svg></svg>\n'
+  run_file "tpl {{/* */}} interior" fail 'charts/c/templates/_h.tpl,line=2' '' charts/c/templates/_h.tpl $'{{/*\n'"$inner"$'*/}}\n'
+  run_file "yaml {{- /* */ -}} interior" fail 'charts/c/templates/cm.yaml,line=3' '' charts/c/templates/cm.yaml $'data:\n  {{- /*\n'"$inner"$'  */ -}}\n'
+  run_file "ts allowlisted interior" pass 'OK \(1 allowlisted\)' 'src/a.ts:round 7 required this  # example reason' src/a.ts $'/*\n * Notes.\n'"$inner"$' */\nexport const x = 1;\n'
+  run_file "ts delimiters in strings" pass 'OK \(0 allowlisted\)' '' src/a.ts $'const a = "/*";\nconst b = "codex round 7 failed";\nconst c = "*/";\n'
+  run_file "html delimiter in string (over-reports)" fail 'page.html,line=2' '' page.html $'<p title="<!--">\n'"$inner"$'</p>\n'
+  run_file "shell glob is not a comment" pass 'OK \(0 allowlisted\)' '' bin/x.sh $'ls /tmp/*\necho "codex round 7 failed"\n'
 
   if [ "$failed" -gt 0 ]; then
     echo "self-test: $failed case(s) failed." >&2
@@ -147,16 +181,92 @@ cd "$(git rev-parse --show-toplevel)"
 # This script and its allowlist quote the markers by design.
 exclude=(":(exclude)bin/check-review-comments.sh" ":(exclude)$ALLOW_FILE")
 
-# Prints "<path>:<line>:<text>" for every line of every module, class and
-# function docstring in the NUL-separated file list on stdin. It reads the
-# source span of the docstring statement, so a marker on a continuation line
-# gets its own line number. Exits 1 if a file does not parse: a file the check
-# cannot read must not pass as clean.
-PY_DOCSTRINGS=$(cat <<'PY'
-import ast, subprocess, sys
+# Prints "<path>:<line>:<text>" for every line of every comment that has no
+# per-line leader: Python docstrings, and block comments in the syntaxes named
+# in the header. A comment's lines run from its opening delimiter to its
+# closing one, so a marker on an interior line gets its own line number.
+# Exits 1 if a Python file does not parse: a file the check cannot read must
+# not pass as clean.
+#
+# String literals are skipped only where that is cheap: the C-style scanner
+# (TypeScript, JavaScript, CSS, Terraform) steps over '...', "..." and `...`.
+# The delimiter scanners for HTML, Jinja and Go templates do not know about
+# strings, so a delimiter inside a string there opens a comment. That fails
+# closed: it can only report more, never less. An unterminated block runs to
+# the end of the file for the same reason.
+PY_SCAN=$(cat <<'PY'
+import ast, re, subprocess, sys
 
 if sys.version_info < (3, 8):
-    sys.exit("python 3.8 or newer is needed to read docstring line ranges")
+    sys.exit("python 3.8 or newer is needed to read comment line ranges")
+
+C = (re.compile(r"/\*"), "*/")
+HTML = (re.compile(r"<!--"), "-->")
+JINJA = (re.compile(r"\{#"), "#}")
+GOT = (re.compile(r"\{\{-?\s*/\*"), "*/")
+# Extensions whose block comments need string-aware scanning, with the line
+# comment leaders that can hide a "/*" from the scanner.
+CSCAN = {"ts": ("//",), "tsx": ("//",), "js": ("//",), "jsx": ("//",),
+         "cjs": ("//",), "mjs": ("//",), "css": (), "scss": ("//",),
+         "tf": ("#", "//"), "tfvars": ("#", "//")}
+DELIM = {"html": [HTML, JINJA, C], "htm": [HTML, JINJA, C],
+         "svg": [HTML, C], "vue": [HTML, C], "xml": [HTML], "bpmn": [HTML],
+         "j2": [JINJA, HTML], "jinja": [JINJA, HTML], "jinja2": [JINJA, HTML],
+         "tpl": [GOT], "tftpl": [GOT], "yaml": [GOT], "yml": [GOT]}
+
+
+def c_spans(text, leaders):
+    spans, i, n, line = [], 0, len(text), 1
+    while i < n:
+        ch = text[i]
+        if ch == "\n":
+            line += 1
+            i += 1
+        elif text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            end = n if j < 0 else j + 2
+            first = line
+            line += text.count("\n", i, end)
+            spans.append((first, line))
+            i = end
+        elif any(text.startswith(m, i) for m in leaders):
+            j = text.find("\n", i)
+            i = n if j < 0 else j
+        elif ch in "'\"`":
+            i += 1
+            while i < n and text[i] != ch:
+                if text[i] == "\n":
+                    if ch != "`":
+                        break
+                    line += 1
+                elif text[i] == "\\" and i + 1 < n:
+                    if text[i + 1] == "\n":
+                        line += 1
+                    i += 1
+                i += 1
+            if i < n and text[i] == ch:
+                i += 1
+        else:
+            i += 1
+    return spans
+
+
+def delim_spans(text, syntaxes):
+    spans, pos = [], 0
+    while True:
+        found = [(m.start(), m.end(), close)
+                 for opener, close in syntaxes
+                 for m in [opener.search(text, pos)] if m]
+        if not found:
+            return spans
+        start, after, close = min(found, key=lambda f: f[0])
+        j = text.find(close, after)
+        end = len(text) if j < 0 else j + len(close)
+        spans.append((text.count("\n", 0, start) + 1,
+                      text.count("\n", 0, end) + 1))
+        pos = end
+
+
 tree = sys.argv[1]
 status = 0
 for raw in sys.stdin.buffer.read().split(b"\0"):
@@ -171,28 +281,45 @@ for raw in sys.stdin.buffer.read().split(b"\0"):
     else:
         with open(path, "rb") as fh:
             data = fh.read()
-    try:
-        module = ast.parse(data)
-    except (SyntaxError, ValueError) as err:
-        print("cannot parse " + path + ": " + str(err), file=sys.stderr)
-        status = 1
-        continue
-    lines = data.decode("utf-8", "replace").replace("\r\n", "\n").split("\n")
-    for node in ast.walk(module):
-        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
-                                 ast.AsyncFunctionDef)) or not node.body:
+    text = data.decode("utf-8", "replace").replace("\r\n", "\n")
+    lines = text.split("\n")
+    ext = path.rsplit(".", 1)[-1].lower() if "." in path.rsplit("/", 1)[-1] else ""
+    spans = []
+    if ext == "py":
+        try:
+            module = ast.parse(data)
+        except (SyntaxError, ValueError) as err:
+            print("cannot parse " + path + ": " + str(err), file=sys.stderr)
+            status = 1
             continue
-        first = node.body[0]
-        if (isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant)
-                and isinstance(first.value.value, str)):
-            for n in range(first.lineno, first.end_lineno + 1):
-                print(path + ":" + str(n) + ":" + lines[n - 1])
+        for node in ast.walk(module):
+            if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                     ast.AsyncFunctionDef)) or not node.body:
+                continue
+            first = node.body[0]
+            if (isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant)
+                    and isinstance(first.value.value, str)):
+                spans.append((first.lineno, first.end_lineno))
+    elif ext in CSCAN:
+        spans = c_spans(text, CSCAN[ext])
+    elif ext in DELIM:
+        spans = delim_spans(text, DELIM[ext])
+    for first, last in spans:
+        for n in range(first, min(last, len(lines)) + 1):
+            print(path + ":" + str(n) + ":" + lines[n - 1])
 sys.exit(status)
 PY
 )
 
-# py_files: NUL-separated tracked *.py paths in scope, same excludes as above.
-py_files() { git grep -lIz -e '' ${tree:+"$tree"} -- '*.py' "${exclude[@]}" || true; }
+# scan_files: NUL-separated tracked paths in scope whose extension has a
+# comment syntax beyond per-line leaders. Same excludes as above.
+scan_files() {
+  git grep -lIz -e '' ${tree:+"$tree"} -- \
+    '*.py' '*.ts' '*.tsx' '*.js' '*.jsx' '*.cjs' '*.mjs' '*.css' '*.scss' \
+    '*.tf' '*.tfvars' '*.html' '*.htm' '*.svg' '*.vue' '*.xml' '*.bpmn' \
+    '*.j2' '*.jinja' '*.jinja2' '*.tpl' '*.tftpl' '*.yaml' '*.yml' \
+    "${exclude[@]}" || true
+}
 
 if [ -n "$tree" ]; then
   hits=$(git grep -nIiE "$PATTERN" "$tree" -- . "${exclude[@]}" | sed "s|^$tree:||" || true)
@@ -202,18 +329,19 @@ else
   allow=$(cat "$ALLOW_FILE" 2>/dev/null || true)
 fi
 
-# Docstrings carry no comment leader, so scan them separately and merge.
-if [ "$(py_files | tr -cd '\0' | wc -c)" -gt 0 ]; then
+# Docstrings and block-comment bodies carry no comment leader, so scan them
+# separately and merge.
+if [ "$(scan_files | tr -cd '\0' | wc -c)" -gt 0 ]; then
   if ! command -v python3 >/dev/null 2>&1; then
-    echo "::error::python3 is required to check docstrings in tracked *.py files; install it" >&2
+    echo "::error::python3 is required to check docstrings and block comments; install it" >&2
     exit 1
   fi
-  doc_lines=$(py_files | python3 -c "$PY_DOCSTRINGS" "$tree") || {
-    echo "::error::could not scan Python docstrings (see above); refusing to pass unchecked" >&2
+  scan_lines=$(scan_files | python3 -c "$PY_SCAN" "$tree") || {
+    echo "::error::could not scan docstrings and block comments (see above); refusing to pass unchecked" >&2
     exit 1
   }
-  doc_hits=$(printf '%s\n' "$doc_lines" | grep -iE "$MARKERS" || true)
-  hits=$(printf '%s\n%s\n' "$hits" "$doc_hits" | awk 'NF && !seen[$0]++')
+  scan_hits=$(printf '%s\n' "$scan_lines" | grep -iE "$MARKERS" || true)
+  hits=$(printf '%s\n%s\n' "$hits" "$scan_hits" | awk 'NF && !seen[$0]++')
 fi
 
 # Parse the allowlist into parallel arrays (bash 3.2 has no associative ones).
