@@ -10,6 +10,14 @@
 # The password is typed at ssh's own prompt on /dev/tty. It never reaches argv,
 # a file, the environment or a variable of this script, and nothing caches it.
 #
+# Host key verification: StrictHostKeyChecking=yes is used throughout. The node's
+# host key must already be in ~/.ssh/known_hosts before running this script — verify
+# the fingerprint out of band (VPS console, provider panel) and add it once:
+#
+#   ssh-keyscan -H <NODE_HOST> >> ~/.ssh/known_hosts
+#
+# This protects the password from a man-in-the-middle that impersonates the node.
+#
 # fail2ban: enrollment is one connection with NumberOfPasswordPrompts=1, so a
 # mistyped password costs one failed attempt, not three, and a node that already
 # accepts the key is never asked for a password. The controller itself is
@@ -79,7 +87,7 @@ esac
 PUBKEY="$(ssh-keygen -y -f "$KEY")" || die "cannot derive the public key from ${KEY}"
 
 TARGET="${NODE_USER}@${NODE_HOST}"
-SSH_OPTS=(-i "$KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new
+SSH_OPTS=(-i "$KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes
           -o ConnectTimeout=10 -o LogLevel=ERROR)
 
 # ssh_failure_cause <ssh stderr> — name the likely cause in operator terms.
@@ -87,6 +95,8 @@ ssh_failure_cause() {
     case "$1" in
         *"REMOTE HOST IDENTIFICATION HAS CHANGED"*|*"Host key verification failed"*)
             echo "the host key of ${NODE_HOST} differs from the one in known_hosts (rebuilt node?); run ssh-keygen -R ${NODE_HOST} and retry" ;;
+        *"No ECDSA host key is known"*|*"not in the list of known hosts"*|*"Host key verification"*)
+            echo "the host key of ${NODE_HOST} is not in known_hosts; verify the fingerprint out of band (VPS console or provider panel), then add it: ssh-keyscan -H ${NODE_HOST} >> ~/.ssh/known_hosts" ;;
         *"Permission denied"*)
             echo "${NODE_HOST} rejected our credentials: wrong password for ${NODE_USER}, or the env key is not in that user's authorized_keys" ;;
         *"Connection refused"*)
