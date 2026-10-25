@@ -68,11 +68,28 @@ ALLOW_FILE=.review-comment-allow
 MIN_SUBSTRING=3
 
 tmp=""
-trap '[ -z "$tmp" ] || rm -rf "$tmp"' EXIT
+work=""
+trap '[ -z "$tmp" ] || rm -rf "$tmp"; [ -z "$work" ] || rm -rf "$work"' EXIT
 self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 
 # blank <string>: true when the string is empty or only whitespace.
 blank() { [ -z "${1//[[:space:]]/}" ]; }
+
+# gh_data / gh_prop: escape untrusted text (paths, line content, allowlist
+# entries) for a GitHub workflow command. A path or line may hold a newline,
+# a carriage return, a comma or "::", and unescaped they would end the
+# annotation early or start a new command.
+gh_data() {
+  local s=$1
+  s=${s//'%'/%25}; s=${s//$'\r'/%0D}; s=${s//$'\n'/%0A}
+  printf '%s' "$s"
+}
+gh_prop() {
+  local s
+  s=$(gh_data "$1")
+  s=${s//:/%3A}; s=${s//,/%2C}
+  printf '%s' "$s"
+}
 
 # self_test: plant one review-history comment in a throwaway repo and run the
 # check against allowlists that must fail or pass. A guard that cannot fail is
@@ -159,6 +176,27 @@ self_test() {
   run_file "html delimiter in string (over-reports)" fail 'page.html,line=2' '' page.html $'<p title="<!--">\n'"$inner"$'</p>\n'
   run_file "shell glob is not a comment" pass 'OK \(0 allowlisted\)' '' bin/x.sh $'ls /tmp/*\necho "codex round 7 failed"\n'
 
+  # Paths that hold the delimiters the old colon-joined records split on.
+  # run_pair <name> <want> <expect> <allowlist> <path1> <body1> <path2> <body2>
+  run_pair() {
+    git -C "$tmp" rm -q -r -f --ignore-unmatch -- . >/dev/null
+    mkdir -p "$tmp/$(dirname "$5")" "$tmp/$(dirname "$7")"
+    printf '%s' "$6" > "$tmp/$5"
+    printf '%s' "$8" > "$tmp/$7"
+    git -C "$tmp" add -- "$5" "$7"
+    run_case "$1" "$2" "$3" "$4"
+  }
+  local hit=$'x = 1  # fixed in round 2 by codex\n'
+  local entry='src/app.py:round 2 by codex  # example reason'
+  run_pair "path 'allowed:x' cannot borrow the entry" fail 'file=src/app.py%3Ax,line=1' "$entry" src/app.py "$hit" 'src/app.py:x' "$hit"
+  run_pair "docstring path 'allowed:x' cannot borrow the entry" fail 'file=src/doc.py%3Ax.py,line=1' 'src/doc.py:round 2 by codex  # example reason' src/doc.py $'"""A note: round 2 by codex."""\n' 'src/doc.py:x.py' $'"""A note: round 2 by codex."""\n'
+  run_pair "block-comment path 'allowed:x' cannot borrow the entry" fail 'file=src/a.css%3Ax.css,line=2' 'src/a.css:round 7 required this  # example reason' src/a.css $'/*\ncodex round 7 required this\n*/\n' 'src/a.css:x.css' $'/*\ncodex round 7 required this\n*/\n'
+  run_file "path with a space"     fail 'file=src/a b.py,line=1' '' 'src/a b.py' "$hit"
+  run_file "allowlisted path with a space" pass 'OK \(1 allowlisted\)' 'src/a b.py:round 2 by codex  # example reason' 'src/a b.py' "$hit"
+  run_file "path with a tab"       fail $'file=src/a\tb.py,line=1' '' $'src/a\tb.py' "$hit"
+  run_file "path with a newline"   fail 'file=src/a%0Ab.py,line=1' '' $'src/a\nb.py' "$hit"
+  run_file "docstring in path with a space" fail 'file=src/d e.py,line=1' '' 'src/d e.py' $'"""Round 2 by codex."""\n'
+
   if [ "$failed" -gt 0 ]; then
     echo "self-test: $failed case(s) failed." >&2
     return 1
@@ -181,10 +219,12 @@ cd "$(git rev-parse --show-toplevel)"
 # This script and its allowlist quote the markers by design.
 exclude=(":(exclude)bin/check-review-comments.sh" ":(exclude)$ALLOW_FILE")
 
-# Prints "<path>:<line>:<text>" for every line of every comment that has no
+# Prints "<path> NUL <line> NUL <text> NL" for every line of every comment that has no
 # per-line leader: Python docstrings, and block comments in the syntaxes named
-# in the header. A comment's lines run from its opening delimiter to its
-# closing one, so a marker on an interior line gets its own line number.
+# in the header, that matches the markers. A comment's lines run from its
+# opening delimiter to its closing one, so a marker on an interior line gets
+# its own line number. NUL separates the fields because git permits ":", tabs
+# and newlines in a path.
 # Exits 1 if a Python file does not parse: a file the check cannot read must
 # not pass as clean.
 #
@@ -268,6 +308,9 @@ def delim_spans(text, syntaxes):
 
 
 tree = sys.argv[1]
+markers = re.compile(sys.argv[2], re.I)
+out = sys.stdout.buffer
+emitted = set()
 status = 0
 for raw in sys.stdin.buffer.read().split(b"\0"):
     if not raw:
@@ -306,7 +349,13 @@ for raw in sys.stdin.buffer.read().split(b"\0"):
         spans = delim_spans(text, DELIM[ext])
     for first, last in spans:
         for n in range(first, min(last, len(lines)) + 1):
-            print(path + ":" + str(n) + ":" + lines[n - 1])
+            if (path, n) in emitted or not markers.search(lines[n - 1]):
+                continue
+            emitted.add((path, n))
+            # path NUL line NUL text NL: the same record shape as git grep -z.
+            out.write(path.encode("utf-8", "surrogateescape") + b"\0"
+                      + str(n).encode() + b"\0"
+                      + lines[n - 1].encode("utf-8", "replace") + b"\n")
 sys.exit(status)
 PY
 )
@@ -322,26 +371,39 @@ scan_files() {
 }
 
 if [ -n "$tree" ]; then
-  hits=$(git grep -nIiE "$PATTERN" "$tree" -- . "${exclude[@]}" | sed "s|^$tree:||" || true)
+  git rev-parse --verify --quiet "$tree^{tree}" >/dev/null || {
+    echo "::error::--tree: not a commit or tree: $(gh_data "$tree")" >&2
+    exit 2
+  }
   allow=$(git show "$tree:$ALLOW_FILE" 2>/dev/null || true)
 else
-  hits=$(git grep -nIiE "$PATTERN" -- . "${exclude[@]}" || true)
   allow=$(cat "$ALLOW_FILE" 2>/dev/null || true)
 fi
 
+# Hits are NUL-delimited records, "path NUL line NUL text NL", never a
+# colon-joined string: git permits ":" in a path, so splitting on ":" would
+# let a file named "<allowed path>:x" borrow the allowed path's entry.
+work=$(mktemp -d)
+rc=0
+git grep -z -nIiE "$PATTERN" ${tree:+"$tree"} -- . "${exclude[@]}" > "$work/grep" || rc=$?
+if [ "$rc" -gt 1 ]; then
+  echo "::error::git grep failed (exit $rc); refusing to pass unchecked" >&2
+  exit 1
+fi
+
 # Docstrings and block-comment bodies carry no comment leader, so scan them
-# separately and merge.
-if [ "$(scan_files | tr -cd '\0' | wc -c)" -gt 0 ]; then
+# separately into the same record shape.
+: > "$work/scan"
+scan_files > "$work/files"
+if [ -s "$work/files" ]; then
   if ! command -v python3 >/dev/null 2>&1; then
     echo "::error::python3 is required to check docstrings and block comments; install it" >&2
     exit 1
   fi
-  scan_lines=$(scan_files | python3 -c "$PY_SCAN" "$tree") || {
+  python3 -c "$PY_SCAN" "$tree" "$MARKERS" < "$work/files" > "$work/scan" || {
     echo "::error::could not scan docstrings and block comments (see above); refusing to pass unchecked" >&2
     exit 1
   }
-  scan_hits=$(printf '%s\n' "$scan_lines" | grep -iE "$MARKERS" || true)
-  hits=$(printf '%s\n%s\n' "$hits" "$scan_hits" | awk 'NF && !seen[$0]++')
 fi
 
 # Parse the allowlist into parallel arrays (bash 3.2 has no associative ones).
@@ -350,7 +412,7 @@ fi
 allow_path=(); allow_text=(); allow_used=()
 bad_entries=0
 reject() {
-  echo "::error file=$ALLOW_FILE::malformed entry ($1; want '<path>:<substring>  # <reason>'): $entry"
+  echo "::error file=$ALLOW_FILE::malformed entry ($1; want '<path>:<substring>  # <reason>'): $(gh_data "$entry")"
   bad_entries=$((bad_entries + 1))
 }
 while IFS= read -r entry; do
@@ -377,30 +439,44 @@ while IFS= read -r entry; do
 done <<< "$allow"
 
 failures=0
-while IFS= read -r hit; do
-  [ -n "$hit" ] || continue
-  path=${hit%%:*}
-  rest=${hit#*:}
-  line=${rest%%:*}
-  content=${rest#*:}
-  allowed=0
-  for ((i = 0; i < ${#allow_path[@]}; i++)); do
-    # Both comparisons are literal: the quotes stop glob matching, and the
-    # path must equal the hit's path, not prefix it.
-    if [ "${allow_path[$i]}" = "$path" ] && [[ "$content" == *"${allow_text[$i]}"* ]]; then
-      allowed=1; allow_used[i]=1
+seen_path=(); seen_line=()
+# check_stream <file> <strip-tree>: judge each record against the allowlist.
+# Both the path and the line are compared whole, and the substring is matched
+# literally: the quotes stop glob matching, and a path must equal the entry's
+# path, not prefix it or share a leading part with it. An allowlist entry
+# splits on its first ":", so an entry's path never holds one, and a hit in a
+# path that does is never allowed.
+check_stream() {
+  local rpath rline rtext i dup allowed
+  while IFS= read -r -d '' rpath && IFS= read -r -d '' rline && IFS= read -r rtext; do
+    if [ "$2" = strip ] && [ -n "$tree" ] && [ "${rpath#"$tree":}" != "$rpath" ]; then
+      rpath=${rpath#"$tree":}
     fi
-  done
-  if [ "$allowed" -eq 0 ]; then
-    echo "::error file=$path,line=$line::comment records review history; keep the reason, drop the provenance: $content"
-    failures=$((failures + 1))
-  fi
-done <<< "$hits"
+    dup=0
+    for ((i = 0; i < ${#seen_path[@]}; i++)); do
+      if [ "${seen_path[$i]}" = "$rpath" ] && [ "${seen_line[$i]}" = "$rline" ]; then dup=1; break; fi
+    done
+    [ "$dup" -eq 0 ] || continue
+    seen_path+=("$rpath"); seen_line+=("$rline")
+    allowed=0
+    for ((i = 0; i < ${#allow_path[@]}; i++)); do
+      if [ "${allow_path[$i]}" = "$rpath" ] && [[ "$rtext" == *"${allow_text[$i]}"* ]]; then
+        allowed=1; allow_used[i]=1
+      fi
+    done
+    if [ "$allowed" -eq 0 ]; then
+      echo "::error file=$(gh_prop "$rpath"),line=$rline::comment records review history; keep the reason, drop the provenance: $(gh_data "$rtext")"
+      failures=$((failures + 1))
+    fi
+  done < "$1"
+}
+check_stream "$work/grep" strip
+check_stream "$work/scan" keep
 
 stale=0
 for ((i = 0; i < ${#allow_path[@]}; i++)); do
   if [ "${allow_used[$i]}" -eq 0 ]; then
-    echo "::error file=$ALLOW_FILE::entry matches nothing, remove it: ${allow_path[$i]}:${allow_text[$i]}"
+    echo "::error file=$ALLOW_FILE::entry matches nothing, remove it: $(gh_data "${allow_path[$i]}:${allow_text[$i]}")"
     stale=$((stale + 1))
   fi
 done
