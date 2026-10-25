@@ -324,6 +324,36 @@ self_test() {
     echo "ok    git grep listing failure fails the check"
   fi
 
+  # A work file that cannot be written must fail the check: the failed
+  # redirection exits 1, which would otherwise read as "no match". The shim
+  # creates the named work file read-only in the new work directory.
+  shim=$(mktemp -d)
+  # shellcheck disable=SC2016
+  printf '%s\n' '#!/bin/bash' \
+    'd=$("$REAL_MKTEMP" "$@") || exit' \
+    'touch "$d/$LOCK_FILE" && chmod 0400 "$d/$LOCK_FILE"' \
+    'printf "%s\n" "$d"' > "$shim/mktemp"
+  chmod +x "$shim/mktemp"
+  local locked body
+  for locked in files grep; do
+    git -C "$tmp" rm -q -r -f --ignore-unmatch -- . >/dev/null
+    if [ "$locked" = files ]; then
+      body=$'/*\n * Notes.\ncodex round 7\n */\n'
+    else
+      body=$'// codex round 7\n'
+    fi
+    printf '%s' "$body" > "$tmp/a.ts"
+    git -C "$tmp" add a.ts
+    rc=0
+    out=$(cd "$tmp" && REAL_MKTEMP=$(command -v mktemp) LOCK_FILE=$locked PATH="$shim:$PATH" bash "$self" 2>&1) || rc=$?
+    if [ "$rc" -ne 1 ] || ! printf '%s\n' "$out" | grep -q 'cannot write .*/'"$locked"'; refusing'; then
+      echo "FAIL  unwritable work file $locked: expected exit 1 with an error, got exit $rc: $out"; failed=$((failed + 1))
+    else
+      echo "ok    unwritable work file $locked fails the check"
+    fi
+  done
+  rm -rf "$shim"
+
   if [ "$failed" -gt 0 ]; then
     echo "self-test: $failed case(s) failed." >&2
     return 1
@@ -868,6 +898,18 @@ fi
 # colon-joined string: git permits ":" in a path, so splitting on ":" would
 # let a file named "<allowed path>:x" borrow the allowed path's entry.
 work=$(mktemp -d)
+# A failed output redirection also exits 1, the status that means "no match"
+# below. Truncate each work file first so a file that cannot be written fails
+# the check here, before a later step reads an empty or stale file.
+fresh() {
+  : > "$1" || {
+    echo "::error::cannot write $(gh_data "$1"); refusing to pass unchecked" >&2
+    exit 1
+  }
+}
+fresh "$work/grep"
+fresh "$work/files"
+fresh "$work/scan"
 rc=0
 git grep -z -nIiE "$PATTERN" ${tree:+"$tree"} -- . "${exclude[@]}" > "$work/grep" || rc=$?
 if [ "$rc" -gt 1 ]; then
@@ -877,7 +919,6 @@ fi
 
 # Docstrings and block-comment bodies carry no comment leader, so scan them
 # separately into the same record shape.
-: > "$work/scan"
 scan_rc=0
 scan_files > "$work/files" || scan_rc=$?
 if [ "$scan_rc" -gt 1 ]; then
