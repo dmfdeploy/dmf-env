@@ -36,7 +36,7 @@
 #   bin/unseal-openbao.sh <ENV_NAME> --yes          # skip the interactive confirm prompt
 #
 # ENV_NAME is required and maps to the env under ~/.dmfdeploy/envs/<ENV_NAME>/.
-# Current live env id lives in the umbrella's STATUS.md. SHARE_DIR,
+# Current live env id lives in the umbrella's STATUS.digest.local.md, which bin/generate-status.sh writes. SHARE_DIR,
 # SHARE_KEYCHAIN_NAME, and SSH_TARGET are derived from the env's inventory.
 # SSH_TARGET comes from openbao_key_path / openbao_keychain_share3_service in
 # group_vars/all/openbao.yml and the first [k3s_control] host in hosts.ini.
@@ -138,7 +138,7 @@ else
     while IFS= read -r env; do
         [ -n "$env" ] && echo "  $env" >&2
     done < <(dmf_list_known_envs)
-    echo "(current live env id is in the umbrella's STATUS.md)" >&2
+    echo "(current live env id is in the umbrella's STATUS.digest.local.md, which bin/generate-status.sh writes)" >&2
     exit 1
 fi
 

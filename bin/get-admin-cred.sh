@@ -8,7 +8,7 @@
 #
 # ENV_NAME is required; the wrapper used to default to a baked-in env name
 # but env ids rotate as we cut new test clusters, so a static default just
-# enabled drift. Look up the current env id in the umbrella's STATUS.md.
+# enabled drift. Look up the current env id in the umbrella's STATUS.digest.local.md, which bin/generate-status.sh writes.
 # When supplied, $OPENBAO_BREAKGLASS_FILE,
 # $OPENBAO_SSH_TARGET, and the SSH key are derived from the env's inventory:
 #   ~/.dmfdeploy/envs/<env>/inventory/group_vars/all/*.yml → openbao_key_path
@@ -87,7 +87,7 @@ else
     while IFS= read -r env; do
         [ -n "$env" ] && echo "  $env" >&2
     done < <(dmf_list_known_envs)
-    echo "(current live env id is in the umbrella's STATUS.md)" >&2
+    echo "(current live env id is in the umbrella's STATUS.digest.local.md, which bin/generate-status.sh writes)" >&2
     exit 1
 fi
 

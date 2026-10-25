@@ -120,7 +120,7 @@ while [ $# -gt 0 ]; do
 done
 if [ $# -lt 1 ]; then
     echo "usage: $(basename "$0") [--read-only] <env-id>" >&2
-    echo "       <env-id> is a known env (~/.dmfdeploy/envs/<env-id>/); current id is in the umbrella STATUS.md." >&2
+    echo "       <env-id> is a known env (~/.dmfdeploy/envs/<env-id>/); current id is in the umbrella's STATUS.digest.local.md, which bin/generate-status.sh writes." >&2
     echo "       available: $(dmf_list_known_envs | tr '\n' ' ')" >&2
     exit 2
 fi

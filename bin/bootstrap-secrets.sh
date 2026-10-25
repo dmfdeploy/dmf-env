@@ -14,7 +14,7 @@
 # ADR-0007: no secrets in argv, stdout, logs, or AI transcripts.
 # ADR-0010: live runs through bin/run-playbook.sh (this script is called by it).
 #
-# Usage (<env-id> is your env; current id is in the umbrella STATUS.md):
+# Usage (<env-id> is your env; current id is in the umbrella's STATUS.digest.local.md, which bin/generate-status.sh writes):
 #   bin/bootstrap-secrets.sh init <env-id>
 #   bin/bootstrap-secrets.sh doctor <env-id>
 #   bin/bootstrap-secrets.sh export-vars <env-id> /tmp/vars.json

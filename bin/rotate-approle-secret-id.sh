@@ -86,7 +86,7 @@ else
     while IFS= read -r env; do
         [ -n "$env" ] && echo "  $env" >&2
     done < <(dmf_list_known_envs)
-    echo "(current live env id is in the umbrella's STATUS.md)" >&2
+    echo "(current live env id is in the umbrella's STATUS.digest.local.md, which bin/generate-status.sh writes)" >&2
     exit 1
 fi
 
@@ -94,7 +94,7 @@ if [ $# -lt 2 ] || [ $# -gt 3 ]; then
     cat >&2 <<'USAGE'
 Usage: rotate-approle-secret-id.sh <ENV_NAME> <approle> <keychain-service> [keychain-account=secret-id]
 
-  ENV_NAME          — inventory environment (required; current id in umbrella STATUS.md)
+  ENV_NAME          — inventory environment (required; current id in umbrella's STATUS.digest.local.md, which bin/generate-status.sh writes)
   approle           — OpenBao AppRole name
   keychain-service  — macOS Keychain service name
   keychain-account  — Keychain account; defaults to "secret-id"

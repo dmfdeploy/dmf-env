@@ -58,7 +58,7 @@ Usage:
                                   Uses the env's tfvars only for credentials;
                                   the env's own buckets are not touched.
 
-ENV is your env id / manifest name (the current id is in the umbrella STATUS.md).
+ENV is your env id / manifest name (the current id is in the umbrella's STATUS.digest.local.md, which bin/generate-status.sh writes).
 USAGE
 }
 
