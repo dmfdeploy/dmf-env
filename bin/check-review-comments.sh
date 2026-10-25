@@ -354,6 +354,42 @@ self_test() {
   done
   rm -rf "$shim"
 
+  # A failure after fresh() must also fail the check: the work file was
+  # writable, but the redirected command's status cannot be recorded. The
+  # mktemp shim notes the work directory. The git shim then makes the status
+  # file a directory just as the targeted git grep starts, so the status write
+  # fails while the command itself succeeds. The planted file is clean, so a
+  # check that ignored the failed write would pass.
+  shim=$(mktemp -d)
+  real_git=$(command -v git)
+  # shellcheck disable=SC2016
+  printf '%s\n' '#!/bin/bash' \
+    'd=$("$REAL_MKTEMP" "$@") || exit' \
+    'printf "%s\n" "$d" > "$WORK_NOTE"' \
+    'printf "%s\n" "$d"' > "$shim/mktemp"
+  # shellcheck disable=SC2016
+  printf '%s\n' '#!/bin/bash' \
+    'if [ "$1" = grep ]; then for a in "$@"; do' \
+    '  [ "$a" = "$TRIGGER_ARG" ] && mkdir "$(cat "$WORK_NOTE")/$STATUS_NAME"' \
+    'done; fi' \
+    "exec \"$real_git\" \"\$@\"" > "$shim/git"
+  chmod +x "$shim/mktemp" "$shim/git"
+  local trigger status
+  for trigger in -nIiE:grep.rc -lIz:files.rc; do
+    git -C "$tmp" rm -q -r -f --ignore-unmatch -- . >/dev/null
+    printf '// a plain note\n' > "$tmp/a.ts"
+    git -C "$tmp" add a.ts
+    status=${trigger#*:}
+    rc=0
+    out=$(cd "$tmp" && REAL_MKTEMP=$(command -v mktemp) WORK_NOTE="$shim/note" TRIGGER_ARG=${trigger%%:*} STATUS_NAME=$status PATH="$shim:$PATH" bash "$self" 2>&1) || rc=$?
+    if [ "$rc" -ne 1 ] || ! printf '%s\n' "$out" | grep -q 'could not record the exit status of'; then
+      echo "FAIL  status write failure after fresh ($status): expected exit 1 with an error, got exit $rc: $out"; failed=$((failed + 1))
+    else
+      echo "ok    status write failure after fresh ($status) fails the check"
+    fi
+  done
+  rm -rf "$shim"
+
   if [ "$failed" -gt 0 ]; then
     echo "self-test: $failed case(s) failed." >&2
     return 1
@@ -910,8 +946,25 @@ fresh() {
 fresh "$work/grep"
 fresh "$work/files"
 fresh "$work/scan"
-rc=0
-git grep -z -nIiE "$PATTERN" ${tree:+"$tree"} -- . "${exclude[@]}" > "$work/grep" || rc=$?
+# fresh only proves the file was writable beforehand. A redirection that fails
+# later also exits 1, so a command's own status is written from inside the
+# redirected block to a separate file. A missing or malformed status file means
+# the redirection or the status write failed, never that the command ran. Each
+# status write ends in "|| :" so that a failed write reaches read_status.
+# read_status <status file> <label>: print the recorded exit status.
+read_status() {
+  local s
+  s=$(cat "$1" 2>/dev/null) || s=""
+  case "$s" in
+    ''|*[!0-9]*)
+      echo "::error::could not record the exit status of $2; refusing to pass unchecked" >&2
+      exit 1 ;;
+  esac
+  printf '%s\n' "$s"
+}
+rm -f "$work/grep.rc"
+{ rc=0; git grep -z -nIiE "$PATTERN" ${tree:+"$tree"} -- . "${exclude[@]}" || rc=$?; echo "$rc" > "$work/grep.rc" || :; } > "$work/grep"
+rc=$(read_status "$work/grep.rc" "git grep")
 if [ "$rc" -gt 1 ]; then
   echo "::error::git grep failed (exit $rc); refusing to pass unchecked" >&2
   exit 1
@@ -919,8 +972,9 @@ fi
 
 # Docstrings and block-comment bodies carry no comment leader, so scan them
 # separately into the same record shape.
-scan_rc=0
-scan_files > "$work/files" || scan_rc=$?
+rm -f "$work/files.rc"
+{ scan_rc=0; scan_files || scan_rc=$?; echo "$scan_rc" > "$work/files.rc" || :; } > "$work/files"
+scan_rc=$(read_status "$work/files.rc" "the file listing")
 if [ "$scan_rc" -gt 1 ]; then
   echo "::error::git grep could not list files for the docstring and block-comment scan (exit $scan_rc); refusing to pass unchecked" >&2
   exit 1
