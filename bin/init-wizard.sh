@@ -137,6 +137,20 @@ yaml_string_list() {
     fi
 }
 
+# fail2ban_ignoreip <cidr-list>... — value for harden_fail2ban_ignoreip: loopback
+# plus the operator's SSH source CIDRs, so fail2ban never bans the control
+# plane. World-open ranges are dropped; exempting them would disable fail2ban.
+fail2ban_ignoreip() {
+    local item out="127.0.0.1/8 ::1"
+    for item in ${*//,/ }; do
+        case "$item" in
+            0.0.0.0/0|::/0) ;;
+            *) out="${out} ${item}" ;;
+        esac
+    done
+    printf '%s' "$out"
+}
+
 confirm() {
     local label="$1" ans=""
     read -r -p "  ${label} [y/N]: " ans
@@ -1329,6 +1343,8 @@ render_inventory_main() {
     local ssh_allow_ipv4_yaml ssh_allow_ipv6_yaml
     ssh_allow_ipv4_yaml="$(yaml_string_list "${SSH_ALLOW_IPV4:-}")"
     ssh_allow_ipv6_yaml="$(yaml_string_list "${SSH_ALLOW_IPV6:-}")"
+    local fail2ban_ignoreip_value
+    fail2ban_ignoreip_value="$(fail2ban_ignoreip "${SSH_ALLOW_IPV4:-}" "${SSH_ALLOW_IPV6:-}")"
 
     local label_comment="${ENV_LABEL:-<none>}"
     local control_node="${env_id}-node-01"
@@ -1440,6 +1456,7 @@ harden_admin_pubkey: "{{ lookup('file', '${env_root}/ssh/operator.pub') }}"
 ansible_ssh_private_key_file: "${env_root}/ssh/operator.key"
 harden_ssh_allow_ipv4: ${ssh_allow_ipv4_yaml}
 harden_ssh_allow_ipv6: ${ssh_allow_ipv6_yaml}
+harden_fail2ban_ignoreip: "${fail2ban_ignoreip_value}"
 harden_private_cidr: "${private_cidr}"
 
 # --- Kubernetes ---
@@ -2001,8 +2018,9 @@ EOF
   1. Verify the bundle decrypts:
      ${SCRIPT_DIR}/bootstrap-secrets.sh doctor ${ENV_ID}
 
-  2. Confirm the node is reachable over SSH:
-     ssh -i ${SSH_PRIVKEY_PATH} ${ANSIBLE_USER}@${SANDBOX_NODE_IP}
+  2. Enroll the SSH key on the node (asks once for ${ANSIBLE_USER}'s password if
+     the node does not accept the key yet) and confirm key login works:
+     ${SCRIPT_DIR}/enroll-ssh-key.sh ${ENV_ID}
 
   3. Provision the sandbox (single node; local-path, ServiceLB 80/443, local CA):
      RUNBOOK_TIMEOUT=5400 ${SCRIPT_DIR}/run-playbook.sh ${ENV_ID} \\
