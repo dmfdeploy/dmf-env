@@ -12,6 +12,13 @@
 # fails. An allowlist entry that no longer matches any hit also fails, so the
 # list shrinks as the lines it covers go away.
 #
+# Python docstrings are checked too: a docstring has no comment leader, so its
+# lines are matched on the markers alone. They are found with Python's ast
+# module, which needs python3 whenever a tracked *.py file is in scope; the
+# check fails rather than skip them. A docstring line is reported and
+# allowlisted as <path>:<line> like any other. Ordinary string literals (log
+# messages, error text) are data, not commentary, and are not scanned.
+#
 # Allowlist format (.review-comment-allow at the repo root), one entry per
 # line, blank lines and lines starting with # ignored:
 #
@@ -34,7 +41,10 @@ set -euo pipefail
 
 # No \b: BSD regex (macOS git grep -E) does not support it, so a pattern
 # using it silently matches less on a laptop than on Linux CI.
-PATTERN='(#|//|--|\*).*(codex|lkirc|claude[0-9]|(claude|qwen|gemini)[-a-z0-9]*'"'"'s|round[- ]?[0-9]|[0-9](st|nd|rd|th) round|fix[- ]round|work[- ]order|gate finding|review finding|adversarial (gate|round)|PR ?#[0-9]+\))'
+# MARKERS names review history. A comment hit is a comment leader followed by
+# a marker; a docstring has no leader, so its lines are matched on MARKERS alone.
+MARKERS='(codex|lkirc|claude[0-9]|(claude|qwen|gemini)[-a-z0-9]*'"'"'s|round[- ]?[0-9]|[0-9](st|nd|rd|th) round|fix[- ]round|work[- ]order|gate finding|review finding|adversarial (gate|round)|PR ?#[0-9]+\))'
+PATTERN='(#|//|--|\*).*'"$MARKERS"
 ALLOW_FILE=.review-comment-allow
 # A shorter substring matches too many lines to say what it allows.
 MIN_SUBSTRING=3
@@ -96,6 +106,25 @@ self_test() {
   run_case "malformed line"            fail 'malformed' 'not an allowlist entry'
   run_case "missing reason separator"  fail 'malformed' 'src/app.py:round 2 by codex'
 
+
+  # Docstring cases. Each plants one Python file and nothing else.
+  git -C "$tmp" rm -q -f src/app.py
+  # run_py <name> <want> <expect> <allowlist> <file body>
+  run_py() {
+    mkdir -p "$tmp/src"
+    printf '%s' "$5" > "$tmp/src/doc.py"
+    git -C "$tmp" add src/doc.py
+    run_case "$1" "$2" "$3" "$4"
+  }
+  local multi=$'def f():\n    """Return one.\n\n    Added in fix round 3 so callers retry.\n    """\n    return 1\n'
+  run_py "module docstring"        fail 'src/doc.py,line=1' '' $'"""Notes: codex round 7 required this."""\nx = 1\n'
+  run_py "function docstring"      fail 'src/doc.py,line=2' '' $'def f():\n    """Return one; lkirc asked for this."""\n    return 1\n'
+  run_py "class docstring"         fail 'src/doc.py,line=2' '' $'class C:\n    """Holds state, per the work order."""\n'
+  run_py "continuation line"       fail 'src/doc.py,line=4' '' "$multi"
+  run_py "allowlisted docstring"   pass 'OK \(1 allowlisted\)' 'src/doc.py:fix round 3 so callers retry  # example reason' "$multi"
+  run_py "plain string literal"    pass 'OK \(0 allowlisted\)' '' $'msg = "codex round 7 failed"\nprint(msg)\n'
+  run_py "unparsable python"       fail 'cannot parse' '' $'def (\n'
+
   if [ "$failed" -gt 0 ]; then
     echo "self-test: $failed case(s) failed." >&2
     return 1
@@ -118,12 +147,73 @@ cd "$(git rev-parse --show-toplevel)"
 # This script and its allowlist quote the markers by design.
 exclude=(":(exclude)bin/check-review-comments.sh" ":(exclude)$ALLOW_FILE")
 
+# Prints "<path>:<line>:<text>" for every line of every module, class and
+# function docstring in the NUL-separated file list on stdin. It reads the
+# source span of the docstring statement, so a marker on a continuation line
+# gets its own line number. Exits 1 if a file does not parse: a file the check
+# cannot read must not pass as clean.
+PY_DOCSTRINGS=$(cat <<'PY'
+import ast, subprocess, sys
+
+if sys.version_info < (3, 8):
+    sys.exit("python 3.8 or newer is needed to read docstring line ranges")
+tree = sys.argv[1]
+status = 0
+for raw in sys.stdin.buffer.read().split(b"\0"):
+    if not raw:
+        continue
+    path = raw.decode("utf-8", "surrogateescape")
+    if tree and path.startswith(tree + ":"):
+        path = path[len(tree) + 1:]
+    if tree:
+        data = subprocess.run(["git", "show", tree + ":" + path],
+                              check=True, stdout=subprocess.PIPE).stdout
+    else:
+        with open(path, "rb") as fh:
+            data = fh.read()
+    try:
+        module = ast.parse(data)
+    except (SyntaxError, ValueError) as err:
+        print("cannot parse " + path + ": " + str(err), file=sys.stderr)
+        status = 1
+        continue
+    lines = data.decode("utf-8", "replace").replace("\r\n", "\n").split("\n")
+    for node in ast.walk(module):
+        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                 ast.AsyncFunctionDef)) or not node.body:
+            continue
+        first = node.body[0]
+        if (isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant)
+                and isinstance(first.value.value, str)):
+            for n in range(first.lineno, first.end_lineno + 1):
+                print(path + ":" + str(n) + ":" + lines[n - 1])
+sys.exit(status)
+PY
+)
+
+# py_files: NUL-separated tracked *.py paths in scope, same excludes as above.
+py_files() { git grep -lIz -e '' ${tree:+"$tree"} -- '*.py' "${exclude[@]}" || true; }
+
 if [ -n "$tree" ]; then
   hits=$(git grep -nIiE "$PATTERN" "$tree" -- . "${exclude[@]}" | sed "s|^$tree:||" || true)
   allow=$(git show "$tree:$ALLOW_FILE" 2>/dev/null || true)
 else
   hits=$(git grep -nIiE "$PATTERN" -- . "${exclude[@]}" || true)
   allow=$(cat "$ALLOW_FILE" 2>/dev/null || true)
+fi
+
+# Docstrings carry no comment leader, so scan them separately and merge.
+if [ "$(py_files | tr -cd '\0' | wc -c)" -gt 0 ]; then
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "::error::python3 is required to check docstrings in tracked *.py files; install it" >&2
+    exit 1
+  fi
+  doc_lines=$(py_files | python3 -c "$PY_DOCSTRINGS" "$tree") || {
+    echo "::error::could not scan Python docstrings (see above); refusing to pass unchecked" >&2
+    exit 1
+  }
+  doc_hits=$(printf '%s\n' "$doc_lines" | grep -iE "$MARKERS" || true)
+  hits=$(printf '%s\n%s\n' "$hits" "$doc_hits" | awk 'NF && !seen[$0]++')
 fi
 
 # Parse the allowlist into parallel arrays (bash 3.2 has no associative ones).
