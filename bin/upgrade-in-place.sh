@@ -69,7 +69,7 @@ if [ $# -lt 1 ] || [ -z "${1:-}" ] || ! dmf_env_exists "$1"; then
   while IFS= read -r env; do
     [ -n "$env" ] && echo "  $env" >&2
   done < <(dmf_list_known_envs)
-  echo "(current live env id is in the umbrella's STATUS.md)" >&2
+  echo "(current live env id is in the umbrella's STATUS.digest.local.md, which bin/generate-status.sh writes)" >&2
   exit 1
 fi
 

@@ -13,7 +13,7 @@
 # Usage:
 #   bin/bootstrap-operator-approle.sh <ENV_NAME> <approle> <keychain-service> [keychain-account=secret-id] [scope=k3s-hetzner]
 #
-# Example (post-fresh-rollout; <env-id> is your env, current id in the umbrella STATUS.md):
+# Example (post-fresh-rollout; <env-id> is your env, current id in the umbrella's STATUS.digest.local.md, which bin/generate-status.sh writes):
 #   bin/bootstrap-operator-approle.sh <env-id> dmf-infra openbao-approle-dmf-infra
 #
 # What it prints:
@@ -96,7 +96,7 @@ else
     while IFS= read -r env; do
         [ -n "$env" ] && echo "  $env" >&2
     done < <(dmf_list_known_envs)
-    echo "(current live env id is in the umbrella's STATUS.md)" >&2
+    echo "(current live env id is in the umbrella's STATUS.digest.local.md, which bin/generate-status.sh writes)" >&2
     exit 1
 fi
 
@@ -104,7 +104,7 @@ if [ $# -lt 2 ] || [ $# -gt 4 ]; then
     cat >&2 <<'USAGE'
 Usage: bootstrap-operator-approle.sh <ENV_NAME> <approle> <keychain-service> [keychain-account=secret-id] [scope=k3s-hetzner]
 
-  ENV_NAME          — inventory environment (required; current id in umbrella STATUS.md)
+  ENV_NAME          — inventory environment (required; current id in umbrella's STATUS.digest.local.md, which bin/generate-status.sh writes)
   approle           — name for the OpenBao AppRole AND its matching policy
   keychain-service  — macOS Keychain service name (matches openbao_keychain_service)
   keychain-account  — Keychain account; defaults to "secret-id"

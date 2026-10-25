@@ -9,7 +9,7 @@
 # ~/.dmfdeploy/envs/<ENV_NAME>/inventory/. The wrapper used to default to a
 # baked-in env name; that default was removed (env ids rotate as we cut new
 # test clusters, so a static default just enabled drift).
-# Look up the current env id in the umbrella's STATUS.md.
+# Look up the current env id in the umbrella's STATUS.digest.local.md, which bin/generate-status.sh writes.
 #
 # Examples:
 #   bin/run-playbook.sh <env-name> ../dmf-infra/k3s-lab-bootstrap/playbooks/600-landing-page.yml
@@ -55,7 +55,7 @@ print_envs_and_die() {
     [ -n "$env" ] && echo "  $env" >&2
   done < <(dmf_list_known_envs)
   echo "" >&2
-  echo "Current live env id is in the umbrella's STATUS.md." >&2
+  echo "Current live env id is in the umbrella's STATUS.digest.local.md, which bin/generate-status.sh writes." >&2
   exit 1
 }
 

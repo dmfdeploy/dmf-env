@@ -12,7 +12,7 @@
 # node IP + base domain from the env inventory so it stays correct across VM
 # rebuilds. Idempotent: re-running replaces the block.
 #
-# Usage (ENV_NAME is required — current env id is in the umbrella STATUS.md):
+# Usage (ENV_NAME is required — current env id is in the umbrella's STATUS.digest.local.md, which bin/generate-status.sh writes):
 #   ENV_NAME=<env-id> bin/sandbox-workstation-hosts.sh
 #   ENV_NAME=<env-id> bin/sandbox-workstation-hosts.sh --remove   # delete the block
 
@@ -45,7 +45,7 @@ case "${1:-}" in
   *) die "Unknown argument: $1 (use --remove)" ;;
 esac
 
-[ -n "$ENV_NAME" ] || die "ENV_NAME is required, e.g.  ENV_NAME=<env-id> $(basename "$0")  (current env id is in the umbrella STATUS.md). Never defaults to a baked env."
+[ -n "$ENV_NAME" ] || die "ENV_NAME is required, e.g.  ENV_NAME=<env-id> $(basename "$0")  (current env id is in the umbrella's STATUS.digest.local.md, which bin/generate-status.sh writes). Never defaults to a baked env."
 
 # Resolve env paths (sandbox uses new-layout under ~/.dmfdeploy/envs/<env>/)
 cd "$REPO_DIR"

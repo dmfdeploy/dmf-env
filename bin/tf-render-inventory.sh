@@ -5,7 +5,7 @@
 # Usage:
 #   bin/tf-render-inventory.sh <ENV_NAME>
 #
-# ENV_NAME is required (current id in umbrella STATUS.md).
+# ENV_NAME is required (current id in umbrella's STATUS.digest.local.md, which bin/generate-status.sh writes).
 #
 # Implementation: thin wrapper over `tofu apply -target=local_file.hosts_ini`
 # with -refresh=false so no provider API calls are made. The hosts.ini file
@@ -25,7 +25,7 @@ if [ $# -gt 0 ]; then
   shift
 else
   echo "ERROR: <ENV_NAME> is required as the first positional arg." >&2
-  echo "(current live env id is in the umbrella's STATUS.md)" >&2
+  echo "(current live env id is in the umbrella's STATUS.digest.local.md, which bin/generate-status.sh writes)" >&2
   exit 1
 fi
 

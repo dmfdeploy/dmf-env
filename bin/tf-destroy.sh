@@ -27,7 +27,7 @@
 #   4. Delete the LB — no longer needed; CCM re-creates it on next
 #      cluster bring-up when the Service of type=LoadBalancer comes up.
 #
-# Usage (ENV_NAME is required — no default; current id is in the umbrella STATUS.md):
+# Usage (ENV_NAME is required — no default; current id is in the umbrella's STATUS.digest.local.md, which bin/generate-status.sh writes):
 #   bin/tf-destroy.sh <env-id>
 #
 # Env-var overrides:
@@ -55,7 +55,7 @@ set -euo pipefail
 ENV_NAME="${1:-}"
 if [ -z "$ENV_NAME" ]; then
   echo "ERROR: ENV_NAME (your cloud env id) is required as the first arg." >&2
-  echo "  e.g. bin/tf-destroy.sh <env-id>   (current id is in the umbrella STATUS.md)" >&2
+  echo "  e.g. bin/tf-destroy.sh <env-id>   (current id is in the umbrella's STATUS.digest.local.md, which bin/generate-status.sh writes)" >&2
   echo "  DESTRUCTIVE (tofu destroy) — never defaults to a baked env." >&2
   exit 1
 fi
