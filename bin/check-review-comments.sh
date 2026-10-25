@@ -18,8 +18,8 @@
 #                                    follow the leader on the same line
 #   docstrings        *.py           module, class and function docstrings
 #   /* ... */         *.ts *.tsx *.js *.jsx *.cjs *.mjs *.css *.scss *.tf
-#                     *.tfvars (string-aware); *.html *.htm *.svg *.vue
-#                     (not string-aware)
+#                     *.tfvars (skips '...' and "..." strings); *.html *.htm *.svg *.vue
+#                     (skips nothing)
 #   <!-- ... -->      *.html *.htm *.svg *.vue *.xml *.bpmn *.j2 *.jinja
 #   {# ... #}         *.html *.htm *.j2 *.jinja *.jinja2
 #   {{/* ... */}}     *.tpl *.tftpl *.yaml *.yml, also as {{- /* ... */ -}}
@@ -28,10 +28,12 @@
 # line from the opening delimiter to the closing one is matched on the
 # markers alone and reported as <path>:<line>; the allowlist covers it the
 # same way. These need python3 whenever a file with one of those extensions is
-# tracked, and the check fails rather than skip them. Where a delimiter could
-# sit inside a string, the scanners for JavaScript, TypeScript, CSS and
-# Terraform skip strings; the others do not, so they can report a delimiter
-# inside a string, never miss a comment.
+# tracked, and the check fails rather than skip them. The scanners for
+# JavaScript, TypeScript, CSS and Terraform skip '...' and "..." strings,
+# which cannot hold code, but not template literals: a ${...} substitution
+# can hold a real comment, so template text is scanned like code. The other
+# scanners skip nothing. So a delimiter inside a string or template text can
+# be reported, but a comment is never missed.
 #
 # Out of scope: ordinary string literals (log and error text are data),
 # Markdown, lockfiles and generated or minified files (see the excludes), and
@@ -171,6 +173,10 @@ self_test() {
   run_file "svg <!-- --> interior" fail 'img.svg,line=2' '' img.svg $'<!--\n'"$inner"$'-->\n<svg></svg>\n'
   run_file "tpl {{/* */}} interior" fail 'charts/c/templates/_h.tpl,line=2' '' charts/c/templates/_h.tpl $'{{/*\n'"$inner"$'*/}}\n'
   run_file "yaml {{- /* */ -}} interior" fail 'charts/c/templates/cm.yaml,line=3' '' charts/c/templates/cm.yaml $'data:\n  {{- /*\n'"$inner"$'  */ -}}\n'
+  run_file "ts comment in a template substitution" fail 'src/a.ts,line=3' '' src/a.ts $'const s = `a ${ /*\n * Notes.\n'"$inner"$' */ x } b`;\n'
+  run_file "tsx comment in a template substitution" fail 'src/a.tsx,line=3' '' src/a.tsx $'const s = `a ${ /*\n * Notes.\n'"$inner"$' */ x } b`;\n'
+  run_file "ts template text with /* and no marker" pass 'OK \(0 allowlisted\)' '' src/a.ts $'const s = `glob: src/*.ts`;\nconst t = 1;\n'
+  run_file "ts template text with /* then a marker (over-reports)" fail 'src/a.ts,line=2' '' src/a.ts $'const s = `glob: src/*.ts`;\nconst t = "codex round 7 failed";\n'
   run_file "ts allowlisted interior" pass 'OK \(1 allowlisted\)' 'src/a.ts:round 7 required this  # example reason' src/a.ts $'/*\n * Notes.\n'"$inner"$' */\nexport const x = 1;\n'
   run_file "ts delimiters in strings" pass 'OK \(0 allowlisted\)' '' src/a.ts $'const a = "/*";\nconst b = "codex round 7 failed";\nconst c = "*/";\n'
   run_file "html delimiter in string (over-reports)" fail 'page.html,line=2' '' page.html $'<p title="<!--">\n'"$inner"$'</p>\n'
@@ -228,10 +234,12 @@ exclude=(":(exclude)bin/check-review-comments.sh" ":(exclude)$ALLOW_FILE")
 # Exits 1 if a Python file does not parse: a file the check cannot read must
 # not pass as clean.
 #
-# String literals are skipped only where that is cheap: the C-style scanner
-# (TypeScript, JavaScript, CSS, Terraform) steps over '...', "..." and `...`.
-# The delimiter scanners for HTML, Jinja and Go templates do not know about
-# strings, so a delimiter inside a string there opens a comment. That fails
+# String literals are skipped only where they cannot hold code: the C-style
+# scanner (TypeScript, JavaScript, CSS, Terraform) steps over '...' and "..."
+# but not over template literals, because a ${...} substitution can hold a
+# real comment, so template text is scanned like code. The delimiter scanners
+# for HTML, Jinja and Go templates do not know about strings either, so a
+# delimiter inside a string or template text there opens a comment. That fails
 # closed: it can only report more, never less. An unterminated block runs to
 # the end of the file for the same reason.
 PY_SCAN=$(cat <<'PY'
@@ -272,14 +280,12 @@ def c_spans(text, leaders):
         elif any(text.startswith(m, i) for m in leaders):
             j = text.find("\n", i)
             i = n if j < 0 else j
-        elif ch in "'\"`":
+        elif ch in "'\"":
+            # Plain strings cannot hold code. Template literals (backticks)
+            # are not skipped: a ${...} substitution can hold a real comment.
             i += 1
-            while i < n and text[i] != ch:
-                if text[i] == "\n":
-                    if ch != "`":
-                        break
-                    line += 1
-                elif text[i] == "\\" and i + 1 < n:
+            while i < n and text[i] != ch and text[i] != "\n":
+                if text[i] == "\\" and i + 1 < n:
                     if text[i + 1] == "\n":
                         line += 1
                     i += 1
