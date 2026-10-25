@@ -110,6 +110,8 @@ jobs:
           persist-credentials: false
       - name: No review history in comments
         run: bin/check-review-comments.sh
+      - name: Allowlist parser self-test
+        run: bin/check-review-comments.sh --self-test
 
   working-model:
     # Working-model block sync (umbrella issue dmfdeploy/dmfdeploy#32): the
