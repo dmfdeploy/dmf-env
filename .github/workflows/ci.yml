@@ -95,6 +95,9 @@ jobs:
       - name: remove-env-data-root
         run: |
           bash tests/remove-env-data-root.sh
+      - name: unseal-openbao-tls
+        run: |
+          bash tests/unseal-openbao-tls.sh
 
   working-model:
     # Working-model block sync (umbrella issue dmfdeploy/dmfdeploy#32): the

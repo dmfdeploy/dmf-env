@@ -54,13 +54,6 @@ set -euo pipefail
 printf '%s\n' "$*" >> "$SSH_LOG"
 
 case "$*" in
-  *"command -v curl"*)
-    exit 0
-    ;;
-  *"get pod"*".status.podIP"*)
-    printf '192.0.2.42'
-    exit 0
-    ;;
   *"bao status -format=json"*)
     count=0
     if [ -f "$SSH_STATUS_COUNT_FILE" ]; then
@@ -75,9 +68,9 @@ case "$*" in
     fi
     exit 0
     ;;
-  *"curl -sS"*)
+  *"bao write -format=json sys/unseal -"*)
     cat >/dev/null
-    printf '{"sealed":false,"progress":1}'
+    printf '{}'
     exit 0
     ;;
   *)

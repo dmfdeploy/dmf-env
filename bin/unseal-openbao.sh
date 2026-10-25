@@ -7,13 +7,19 @@
 #   - any /tmp file
 #   - this script's stdout
 #   - the SSH client argv (local or remote)
-#   - the curl argv on the control node
+#   - the kubectl or bao argv on the control node or in the pod
 #
-# The share traverses: function stdin → jq stdin → ssh stdin → curl request body
-# (--data-binary @-). It briefly appears in the OpenBao pod's HTTP request
-# handling — bounded to our pod in our namespace. We accept this as the same
-# exposure as the pre-2026-06-01 approach when shares ran in bao operator
-# unseal argv.
+# The share traverses: function stdin → jq stdin → ssh stdin → kubectl exec -i
+# stdin → `bao write sys/unseal -` stdin inside the OpenBao pod → the request
+# body bao sends to the pod's own listener. The kubectl exec stream runs over
+# the Kubernetes API server and kubelet connections, which are TLS; neither
+# logs stream content.
+#
+# TLS: every OpenBao call runs `bao` inside the pod, where the pod spec sets
+# BAO_ADDR=https://127.0.0.1:8200 and BAO_CACERT to the certificate the pod
+# serves (issued for 127.0.0.1). bao verifies that certificate. The wrapper
+# clears any *_SKIP_VERIFY variable for each call and has no path that skips
+# verification. A TLS failure stops the run with exit 7 and says what to check.
 #
 # Procedure (3-of-5 quorum, the routine break-glass path):
 #   share 1 — JuiceFS  <SHARE_DIR>/share-1.json (.key, base64)
@@ -31,15 +37,14 @@
 #
 # ENV_NAME is required and maps to the env under ~/.dmfdeploy/envs/<ENV_NAME>/.
 # Current live env id lives in the umbrella's STATUS.md. SHARE_DIR,
-# SHARE_KEYCHAIN_NAME, SSH_TARGET, and the OpenBao pod IP are derived from the
-# env's inventory and cluster state. SSH_TARGET comes from openbao_key_path /
-# openbao_keychain_share3_service in group_vars/all/openbao.yml and the first
-# [k3s_control] host in hosts.ini; the pod IP is looked up from the cluster.
+# SHARE_KEYCHAIN_NAME, and SSH_TARGET are derived from the env's inventory.
+# SSH_TARGET comes from openbao_key_path / openbao_keychain_share3_service in
+# group_vars/all/openbao.yml and the first [k3s_control] host in hosts.ini.
 # Each can be overridden via env:
 #   OPENBAO_SSH_TARGET    (default: derived from inventory)
 #   OPENBAO_SSH_KEY       (default: derived from inventory)
-#   OPENBAO_API_ADDR      (default: https://<pod-ip>:8200)
-#   OPENBAO_CACERT        (default: -k insecure; set to a CA file path for strict TLS)
+#   OPENBAO_NAMESPACE     (default: openbao)
+#   OPENBAO_POD           (default: openbao-0)
 #   OPENBAO_SHARE_DIR     (default: derived from inventory)
 #   OPENBAO_KEYCHAIN_SERVICE (default: derived from inventory)
 #   OPENBAO_KEYCHAIN_ACCOUNT (default: share)
@@ -56,6 +61,7 @@
 #   4   bao/cluster unreachable
 #   5   unseal failed mid-stream
 #   6   still sealed after feeding 3 shares
+#   7   TLS verification against OpenBao failed (never bypassed)
 
 set -euo pipefail
 
@@ -186,79 +192,97 @@ SHARE_KEYCHAIN_NAME="${OPENBAO_KEYCHAIN_SERVICE:-$DERIVED_KEYCHAIN_SVC}"
 SHARE_KEYCHAIN_ACCT="${OPENBAO_KEYCHAIN_ACCOUNT:-share}"
 SHARE_FIELD="${OPENBAO_SHARE_FIELD:-key}"   # JSON field in share-N.json
 
-OPENBAO_API_ADDR="${OPENBAO_API_ADDR:-}"    # Default: https://<pod-ip>:8200 (resolved below)
-OPENBAO_CACERT="${OPENBAO_CACERT:-}"        # Default: -k (insecure, pod cert won't match IP)
-ssh_opts=(-o LogLevel=ERROR)
+# The node-side curl transport and its OPENBAO_API_ADDR / OPENBAO_CACERT
+# overrides are gone (#717): every call now runs bao inside the pod, which
+# verifies the certificate the pod serves. Refuse a stale override instead of
+# silently ignoring it, so nobody believes their CA file is in use.
+for stale_var in OPENBAO_API_ADDR OPENBAO_CACERT; do
+    if [ -n "${!stale_var:-}" ]; then
+        err "$stale_var is no longer used: the wrapper runs bao inside the OpenBao pod,"
+        err "  which verifies TLS against the certificate the pod serves. Unset $stale_var and retry."
+        exit 1
+    fi
+done
+# -T: never allocate a remote TTY. A TTY would echo piped stdin (a share) back
+# onto the command's output.
+ssh_opts=(-T -o LogLevel=ERROR)
 [ -n "$SSH_KEY" ] && ssh_opts+=(-i "$SSH_KEY")
-curl_opts=(-sS)
-if [ -n "$OPENBAO_CACERT" ]; then
-    curl_opts+=(--cacert "$OPENBAO_CACERT")
-else
-    curl_opts+=(-k)
-fi
 
-# Track whether user explicitly set OPENBAO_API_ADDR (vs auto-resolve)
-OPENBAO_API_ADDR_USER_SET=0
-[ -n "${OPENBAO_API_ADDR}" ] && OPENBAO_API_ADDR_USER_SET=1
+# bao's stderr from the most recent pod call, kept for TLS classification. It
+# holds bao's error text only; bao never echoes request bodies.
+BAO_ERR_FILE="$(mktemp)"
+trap 'rm -f "$BAO_ERR_FILE"' EXIT
 
-remote_bao_status_json() {
-    # `bao status` exits 0 unsealed / 2 sealed / 1 error. We don't trust exit
-    # codes; we parse JSON. Stderr is suppressed because bao writes a deprecation
-    # banner there that would muddy the JSON.
+# Run bao inside the OpenBao pod. stdin passes through to bao; stdout is bao's
+# stdout; stderr goes to BAO_ERR_FILE. BAO_ADDR and BAO_CACERT come from the
+# pod spec; env -u drops any skip-verify variable so verification stays on.
+# sudo -n: never prompt. A password prompt would read the piped share as input.
+pod_bao() {
     ssh "${ssh_opts[@]}" "$SSH_TARGET" \
-        sudo kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml \
-        -n "$OPENBAO_NAMESPACE" exec "$OPENBAO_POD" -- \
-        bao status -format=json 2>/dev/null || true
+        sudo -n kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml \
+        -n "$OPENBAO_NAMESPACE" exec -i "$OPENBAO_POD" -- \
+        env -u BAO_SKIP_VERIFY -u VAULT_SKIP_VERIFY \
+        bao "$@" 2>"$BAO_ERR_FILE"
+}
+
+tls_error_seen() {
+    grep -qiE 'x509|certificate|tls:|handshake' "$BAO_ERR_FILE" 2>/dev/null
+}
+
+die_tls() {
+    err "TLS verification failed while talking to OpenBao inside $OPENBAO_POD:"
+    sed -n '1,5s/^/    /p' "$BAO_ERR_FILE" >&2
+    err "The wrapper never skips certificate verification. Check that:"
+    err "  - the openbao-tls certificate is ready and current:"
+    err "      ssh $SSH_TARGET 'sudo kubectl -n $OPENBAO_NAMESPACE get certificate,secret'"
+    err "  - BAO_CACERT in the pod names the certificate the pod serves"
+    err "    (pod spec default: /openbao/config/tls/tls.crt)"
+    err "  - the certificate covers the BAO_ADDR host (pod spec default: 127.0.0.1)"
+    err "  - the pod restarted after the last certificate rotation"
+    exit 7
+}
+
+# Fetch seal status into STATUS_JSON. Exits 7 on a TLS failure; returns 1 when
+# OpenBao is unreachable for any other reason. `bao status` exits 0 unsealed,
+# 2 sealed, 1 error, so we parse JSON instead of trusting the exit code.
+STATUS_JSON=""
+fetch_status() {
+    STATUS_JSON="$(pod_bao status -format=json </dev/null || true)"
+    # The -z test matters: jq 1.6 exits 0 for `jq -e` on empty input.
+    if [ -z "$STATUS_JSON" ] || ! printf '%s' "$STATUS_JSON" | jq -e 'has("sealed")' >/dev/null 2>&1; then
+        STATUS_JSON=""
+        if tls_error_seen; then die_tls; fi
+        return 1
+    fi
 }
 
 is_sealed() {
-    local json
-    json="$(remote_bao_status_json)"
-    [ -n "$json" ] || return 2
-    [ "$(printf '%s' "$json" | jq -r '.sealed // "unknown"')" = "true" ]
+    fetch_status || return 2
+    [ "$(printf '%s' "$STATUS_JSON" | jq -r '.sealed // "unknown"')" = "true" ]
 }
 
-resolve_openbao_pod_ip() {
-    ssh "${ssh_opts[@]}" "$SSH_TARGET" \
-        sudo kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml \
-        -n "$OPENBAO_NAMESPACE" get pod "$OPENBAO_POD" \
-        -o jsonpath='{.status.podIP}' 2>/dev/null || true
-}
-
-# Feed one share into OpenBao via the HTTP /v1/sys/unseal endpoint.
-# stdin of THIS function = the share value (one line, no trailing newline).
-# The share traverses: function stdin → jq stdin → ssh stdin → curl request body.
-# It never lands in argv on the local Mac, SSH wire, or control node.
-#
-# UNTESTED against a live cluster (none exists as of 2026-06-01); validate
-# node→podIP:8200 reachability + TLS on the next env build.
+# Feed one share into OpenBao through `bao write sys/unseal -` inside the pod.
+# stdin of THIS function = the share value (one line).
+# The share traverses: function stdin → jq → ssh → kubectl exec -i → bao stdin.
+# It never lands in argv on the local Mac, the control node, or in the pod.
+# bao's stdout goes to /dev/null, so nothing it prints can reach ours.
 feed_share_via_stdin() {
     local label="$1"
-    local pod_ip="$2"
-    # Prefer explicit OPENBAO_API_ADDR override; only auto-construct from pod_ip if not set
-    local api_addr="${OPENBAO_API_ADDR:-https://${pod_ip}:8200}"
-    local status sealed progress
+    local sealed progress
 
-    # jq -R reads the line without trailing newline, emits {"key":"<share>"}.
-    # The share stays in stdin the whole way: function stdin → jq → ssh → curl.
-    status="$(
-        jq -R '{key: .}' | \
-        ssh "${ssh_opts[@]}" "$SSH_TARGET" \
-            curl "${curl_opts[@]}" --data-binary @- "$api_addr/v1/sys/unseal"
-    )" || {
-        err "$label: ssh/curl failed"
-        return 5
-    }
-
-    sealed="$(printf '%s' "$status" | jq -r 'if has("sealed") then (.sealed|tostring) else "?" end' 2>/dev/null || echo "?")"
-    progress="$(printf '%s' "$status" | jq -r '.progress // "?"' 2>/dev/null || echo "?")"
-
-    if [ "$sealed" = "?" ]; then
-        err "$label: could not parse OpenBao response (pod API responding?)"
-        printf '%s\n' "$status" >&2
+    if ! jq -R '{key: .}' | pod_bao write -format=json sys/unseal - >/dev/null; then
+        if tls_error_seen; then die_tls; fi
+        err "$label: bao rejected the unseal request:"
+        sed -n '1,5s/^/    /p' "$BAO_ERR_FILE" >&2
         return 5
     fi
 
+    if ! fetch_status; then
+        err "$label: fed, but could not read seal status afterwards (pod responding?)"
+        return 5
+    fi
+    sealed="$(printf '%s' "$STATUS_JSON" | jq -r '.sealed | tostring')"
+    progress="$(printf '%s' "$STATUS_JSON" | jq -r '.progress // "?"')"
     info "$label fed → sealed=$sealed progress=$progress"
 }
 
@@ -323,35 +347,22 @@ if [ "$IS_SANDBOX" -ne 1 ]; then
     require security    # macOS Keychain CLI
 fi
 
-# ── Resolve pod IP and build TLS options (unseal mode only) ───────────────
-if [ "$MODE" != "status" ]; then
-    if [ -z "$OPENBAO_API_ADDR" ]; then
-        POD_IP="$(resolve_openbao_pod_ip)"
-        if [ -z "$POD_IP" ]; then
-            err "could not resolve OpenBao pod IP (cluster unreachable or pod not scheduled)"
-            exit 4
-        fi
-        OPENBAO_API_ADDR="https://${POD_IP}:8200"
-    fi
-fi
-
 # ── Resolved environment ─────────────────────────────────────────────────
 section "Environment: $ENV_NAME"
 info "ssh target:   $SSH_TARGET"
-[ -n "$OPENBAO_API_ADDR" ] && info "pod API addr: $OPENBAO_API_ADDR"
+info "openbao pod:  $OPENBAO_NAMESPACE/$OPENBAO_POD (bao in-pod, TLS verified)"
 info "share dir:    $SHARE_DIR"
 info "keychain svc: $SHARE_KEYCHAIN_NAME"
 
 # ── Status mode ──────────────────────────────────────────────────────────
 if [ "$MODE" = "status" ]; then
     section "OpenBao seal status"
-    json="$(remote_bao_status_json)"
-    if [ -z "$json" ]; then
+    if ! fetch_status; then
         err "could not reach $OPENBAO_POD in $OPENBAO_NAMESPACE on $SSH_TARGET"
         exit 4
     fi
-    printf '%s' "$json" | jq '{sealed, version, t, n, progress, ha_enabled, cluster_name}'
-    if [ "$(printf '%s' "$json" | jq -r '.sealed')" = "false" ]; then
+    printf '%s' "$STATUS_JSON" | jq '{sealed, version, t, n, progress, ha_enabled, cluster_name}'
+    if [ "$(printf '%s' "$STATUS_JSON" | jq -r '.sealed')" = "false" ]; then
         info "(unsealed)"
     else
         info "(sealed)"
@@ -364,7 +375,7 @@ section "Pre-flight"
 
 # 1. Reachability
 info "checking cluster reachability..."
-if [ -z "$(remote_bao_status_json)" ]; then
+if ! fetch_status; then
     err "cannot reach $OPENBAO_POD in $OPENBAO_NAMESPACE on $SSH_TARGET"
     err "  - is the cluster up?    ssh $SSH_TARGET 'sudo kubectl get nodes'"
     err "  - is the pod scheduled? ssh $SSH_TARGET 'sudo kubectl get pod -n $OPENBAO_NAMESPACE'"
@@ -428,8 +439,9 @@ if [ "$IS_SANDBOX" -eq 1 ]; then
     cat <<EOF
   source:    $([ "$SHARE_SOURCE" = keys-json ] && echo "$KEYS_JSON (.unseal_keys_hex)" || echo "$SHARE_DIR/share-1.json + share-2.json (.${SHARE_FIELD})")
              (sandbox posture — no Keychain share-3 required)
-  target:    $OPENBAO_API_ADDR (pod=$OPENBAO_POD ns=$OPENBAO_NAMESPACE)
-  transport: ssh to $SSH_TARGET, curl to pod IP:8200 (node-local, not ingress-exposed)
+  target:    pod=$OPENBAO_POD ns=$OPENBAO_NAMESPACE
+  transport: ssh to $SSH_TARGET, kubectl exec into the pod, bao against the
+             pod's own listener with TLS verified (not ingress-exposed)
 EOF
 else
     section "Unseal procedure (3-of-5 Shamir)"
@@ -437,12 +449,13 @@ else
   source 1:  $SHARE_DIR/share-1.json (JuiceFS, .${SHARE_FIELD})
   source 2:  $SHARE_DIR/share-2.json (JuiceFS, .${SHARE_FIELD})
   source 3:  Keychain service='$SHARE_KEYCHAIN_NAME' account='$SHARE_KEYCHAIN_ACCT' (will prompt to unlock)
-  target:    $OPENBAO_API_ADDR (pod=$OPENBAO_POD ns=$OPENBAO_NAMESPACE)
-  transport: ssh to $SSH_TARGET, curl to pod IP:8200 (node-local, not ingress-exposed)
+  target:    pod=$OPENBAO_POD ns=$OPENBAO_NAMESPACE
+  transport: ssh to $SSH_TARGET, kubectl exec into the pod, bao against the
+             pod's own listener with TLS verified (not ingress-exposed)
 
-Each share is piped via stdin through jq and ssh into curl's request body
-(--data-binary @-). The share value never appears in this script's argv,
-environment, /tmp, stdout, SSH argv, or curl argv.
+Each share is piped via stdin through jq, ssh, and kubectl exec into
+bao write sys/unseal - inside the pod. The share value never appears in this
+script's argv, environment, /tmp, stdout, SSH argv, kubectl argv, or bao argv.
 EOF
 fi
 echo ""
@@ -459,98 +472,58 @@ if [ "$SKIP_CONFIRM" -eq 0 ]; then
     esac
 fi
 
-# ── Node-side precheck: curl availability ────────────────────────────────
-section "Node-side precheck"
-info "checking curl on control node..."
-if ! ssh "${ssh_opts[@]}" "$SSH_TARGET" command -v curl >/dev/null 2>&1; then
-    err "curl not found on control node $SSH_TARGET"
-    err "  The new unseal path requires curl on the node (pod-IP:8200 access)"
-    err "  Install it and retry, or use the legacy kubectl-exec path"
-    exit 4
-fi
-info "  curl available on control node"
-
 # ── Feed shares ──────────────────────────────────────────────────────────
 section "Feeding shares"
 
 if [ "$SHARE_SOURCE" = "keys-json" ]; then
     # Sandbox / raw-init layout: feed the first t unseal keys from
     # openbao-keys.json (t = live threshold; 1 for a 1/1 sandbox). Same pipe as
-    # the share-file path: jq stdout -> feed_share_via_stdin stdin -> ssh -> curl.
+    # the share-file path: jq stdout -> feed_share_via_stdin stdin -> ssh ->
+    # kubectl exec -> bao.
     # The key value never enters argv, env, /tmp, or stdout.
-    t="$(remote_bao_status_json | jq -r '.t // 1')"
+    fetch_status || { err "could not read the unseal threshold from $OPENBAO_POD"; exit 4; }
+    t="$(printf '%s' "$STATUS_JSON" | jq -r '.t // 1')"
     case "$t" in ''|*[!0-9]*) t=1 ;; esac
     nkeys="$(jq -r '.unseal_keys_hex | length' "$KEYS_JSON")"
     [ "$t" -le "$nkeys" ] || { err "threshold t=$t exceeds available keys ($nkeys) in $KEYS_JSON"; exit 3; }
     i=0
     while [ "$i" -lt "$t" ]; do
-        if [ "$OPENBAO_API_ADDR_USER_SET" -ne 1 ]; then
-            POD_IP="$(resolve_openbao_pod_ip)"
-            [ -n "$POD_IP" ] || { err "could not resolve OpenBao pod IP before key $((i+1))"; exit 4; }
-        else
-            POD_IP=""
-        fi
         jq -r --argjson i "$i" '.unseal_keys_hex[$i]' "$KEYS_JSON" \
-            | feed_share_via_stdin "key $((i+1))/$t (openbao-keys.json)" "$POD_IP"
+            | feed_share_via_stdin "key $((i+1))/$t (openbao-keys.json)"
         i=$((i+1))
     done
 else
 
-# share 1 — resolve pod IP (only if not user-overridden), then feed
-if [ "$OPENBAO_API_ADDR_USER_SET" -ne 1 ]; then
-    POD_IP="$(resolve_openbao_pod_ip)"
-    if [ -z "$POD_IP" ]; then
-        err "could not resolve OpenBao pod IP before feeding share 1"
-        exit 4
-    fi
-    info "resolved pod IP: $POD_IP"
-else
-    POD_IP=""
-    info "using explicit OPENBAO_API_ADDR override"
-fi
+# share 1
 jq -r --arg f "$SHARE_FIELD" '.[$f]' "$SHARE_DIR/share-1.json" \
-    | feed_share_via_stdin "share 1 (JuiceFS)" "$POD_IP"
+    | feed_share_via_stdin "share 1 (JuiceFS)"
 
-# share 2 — re-resolve pod IP (only if not user-overridden; pod could reschedule between shares)
-if [ "$OPENBAO_API_ADDR_USER_SET" -ne 1 ]; then
-    POD_IP="$(resolve_openbao_pod_ip)"
-    if [ -z "$POD_IP" ]; then
-        err "could not resolve OpenBao pod IP before feeding share 2"
-        exit 4
-    fi
-else
-    POD_IP=""
-fi
+# share 2
 jq -r --arg f "$SHARE_FIELD" '.[$f]' "$SHARE_DIR/share-2.json" \
-    | feed_share_via_stdin "share 2 (JuiceFS)" "$POD_IP"
+    | feed_share_via_stdin "share 2 (JuiceFS)"
 
 # share 3 — Keychain (non-sandbox only; sandbox is 1/1 self-unseal with shares 1+2)
 if [ "$IS_SANDBOX" -eq 1 ]; then
     info "sandbox posture — skipping share 3 (1/1 self-unseal, shares 1+2 sufficient)"
 else
-    if [ "$OPENBAO_API_ADDR_USER_SET" -ne 1 ]; then
-        POD_IP="$(resolve_openbao_pod_ip)"
-        if [ -z "$POD_IP" ]; then
-            err "could not resolve OpenBao pod IP before feeding share 3"
-            exit 4
-        fi
-    else
-        POD_IP=""
-    fi
     security find-generic-password -s "$SHARE_KEYCHAIN_NAME" -a "$SHARE_KEYCHAIN_ACCT" -w \
-        | feed_share_via_stdin "share 3 (Keychain)" "$POD_IP"
+        | feed_share_via_stdin "share 3 (Keychain)"
 fi
 
 fi  # close the share-source if/else
 
 # ── Verify ───────────────────────────────────────────────────────────────
 section "Verification"
-if is_sealed; then
+if ! fetch_status; then
+    err "could not read seal status after feeding shares — check with --status"
+    exit 4
+fi
+if [ "$(printf '%s' "$STATUS_JSON" | jq -r '.sealed | tostring')" != "false" ]; then
     err "still sealed after feeding 3 shares — investigate"
-    remote_bao_status_json | jq '{sealed, t, n, progress}' >&2
+    printf '%s' "$STATUS_JSON" | jq '{sealed, t, n, progress}' >&2
     exit 6
 fi
 
-remote_bao_status_json | jq '{sealed, version, cluster_id, cluster_name, ha_enabled}'
+printf '%s' "$STATUS_JSON" | jq '{sealed, version, cluster_id, cluster_name, ha_enabled}'
 section "Done — unsealed"
 exit 0
