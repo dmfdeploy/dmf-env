@@ -995,7 +995,7 @@ cmd_seed_bao() {
   # TODO(adr-0011-trigger): bao kv put inside the OpenBao pod exposes
   # secret values via argv (sh -c expansion). Operator-side stdin transport
   # is clean; pod-internal hardening defers to move-2 or ADR-0011 triggers
-  # (public/OSS, external collaborators). See review §CONCERN 2.
+  # (public/OSS, external collaborators).
   require_env_name "${1:-}"
   local env_name="$1"
 
@@ -1626,7 +1626,7 @@ print(json.dumps(data, indent=2))
 cmd_seed_awx_ssh() {
   # TODO(adr-0011-trigger): bao kv put argv exposure inside the OpenBao pod.
   # Operator-side stdin transport is clean; pod-internal hardening defers
-  # to move-2 or ADR-0011 triggers. See review §CONCERN 2.
+  # to move-2 or ADR-0011 triggers.
   require_env_name "${1:-}"
   local env_name="$1"
   resolve_env_or_die "$env_name"

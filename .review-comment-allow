@@ -1,0 +1,5 @@
+# Allowlist for bin/check-review-comments.sh. One entry per line:
+#   <path>:<fixed substring of the line>  # <reason>
+# Entries go away as the lines they cover change; add one only for a mention
+# that is not review history.
+bin/working-model-digest.sh:codex/qwen don't run hooks  # names the agents this hook cannot reach; not review history
