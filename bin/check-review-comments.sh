@@ -301,6 +301,29 @@ self_test() {
   run_file "path with a newline"   fail 'file=src/a%0Ab.py,line=1' '' $'src/a\nb.py' "$hit"
   run_file "docstring in path with a space" fail 'file=src/d e.py,line=1' '' 'src/d e.py' $'"""Round 2 by codex."""\n'
 
+  # A failing git grep while listing files must fail the check, not skip the
+  # docstring and block-comment scan. The shim fails only that listing call.
+  local shim real_git
+  shim=$(mktemp -d)
+  real_git=$(command -v git)
+  # shellcheck disable=SC2016  # the shim body keeps its own variables
+  printf '%s\n' '#!/bin/bash' \
+    'if [ "$1" = grep ]; then for a in "$@"; do [ "$a" = -lIz ] && exit 2; done; fi' \
+    "exec \"$real_git\" \"\$@\"" > "$shim/git"
+  chmod +x "$shim/git"
+  git -C "$tmp" rm -q -r -f --ignore-unmatch -- . >/dev/null
+  printf '/*\n * Notes.\ncodex round 7\n */\n' > "$tmp/a.ts"
+  git -C "$tmp" add a.ts
+  : > "$tmp/$ALLOW_FILE"
+  local out rc=0
+  out=$(cd "$tmp" && PATH="$shim:$PATH" bash "$self" 2>&1) || rc=$?
+  rm -rf "$shim"
+  if [ "$rc" -ne 1 ] || ! printf '%s\n' "$out" | grep -q 'refusing to pass unchecked'; then
+    echo "FAIL  git grep listing failure: expected exit 1 with an error, got exit $rc: $out"; failed=$((failed + 1))
+  else
+    echo "ok    git grep listing failure fails the check"
+  fi
+
   if [ "$failed" -gt 0 ]; then
     echo "self-test: $failed case(s) failed." >&2
     return 1
@@ -820,13 +843,15 @@ sys.exit(status)
 PY
 
 # scan_files: NUL-separated tracked paths in scope whose extension has a
-# comment syntax beyond per-line leaders. Same excludes as above.
+# comment syntax beyond per-line leaders. Same excludes as above. Returns the
+# git grep status: 1 only means no file matched, but a higher status means the
+# list is unreliable, and an empty list would skip the scan below.
 scan_files() {
   git grep -lIz -e '' ${tree:+"$tree"} -- \
     '*.py' '*.ts' '*.tsx' '*.js' '*.jsx' '*.cjs' '*.mjs' '*.css' '*.scss' \
     '*.tf' '*.tfvars' '*.html' '*.htm' '*.svg' '*.vue' '*.xml' '*.bpmn' \
     '*.j2' '*.jinja' '*.jinja2' '*.tpl' '*.tftpl' '*.yaml' '*.yml' \
-    "${exclude[@]}" || true
+    "${exclude[@]}"
 }
 
 if [ -n "$tree" ]; then
@@ -853,7 +878,12 @@ fi
 # Docstrings and block-comment bodies carry no comment leader, so scan them
 # separately into the same record shape.
 : > "$work/scan"
-scan_files > "$work/files"
+scan_rc=0
+scan_files > "$work/files" || scan_rc=$?
+if [ "$scan_rc" -gt 1 ]; then
+  echo "::error::git grep could not list files for the docstring and block-comment scan (exit $scan_rc); refusing to pass unchecked" >&2
+  exit 1
+fi
 if [ -s "$work/files" ]; then
   if ! command -v python3 >/dev/null 2>&1; then
     echo "::error::python3 is required to check docstrings and block comments; install it" >&2
