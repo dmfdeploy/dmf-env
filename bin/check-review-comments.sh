@@ -95,7 +95,21 @@ set -euo pipefail
 # using it silently matches less on a laptop than on Linux CI.
 # MARKERS names review history. A comment hit is a comment leader followed by
 # a marker; a docstring has no leader, so its lines are matched on MARKERS alone.
-MARKERS='(codex|lkirc|claude[0-9]|(claude|qwen|gemini)[-a-z0-9]*'"'"'s|round[- ]?[0-9]|[0-9](st|nd|rd|th) round|fix[- ]round|work[- ]order|gate finding|review finding|adversarial (gate|round)|PR ?#[0-9]+\))'
+# Pieces for the work-package, handoff and finding-code markers. L and R stand
+# in for \b: a marker must not sit inside a longer word or number.
+L='(^|[^a-z0-9_])'
+R='([^a-z0-9_]|$)'
+# A finding code counts only beside a review word, so P95, R1, hex colours,
+# RFC and ADR numbers and HTTP codes never match on their own.
+CTX='(review(er|ed)?|rounds?|gates?|codex|findings?)'
+# After the code, "gate" is left out: "ADR-0028 D8 gate" names a feature gate.
+CTXB='(review(er|ed)?|rounds?|codex|findings?)'
+SEP='[ :,()/-]{1,3}'
+CODE='(r[0-9]+([a-z]|[a-z]?-[0-9]+[a-z]?)|p[0-9]-[0-9]+[a-z]?|p[0-9][a-z]|[fbd][0-9][a-z]?)'
+WP="${L}wp(-?[0-9]+[a-z]?(-[a-z0-9]{1,2})?|-[a-z][0-9]?)${R}"
+HANDOFF="${L}hand-?off('s)?( [a-z]+)? ?(§|section) ?[0-9]"
+FINDING="(${L}${CTX}${SEP}${CODE}${R}|${L}${CODE}${SEP}${CTXB}${R})"
+MARKERS='(codex|lkirc|claude[0-9]|(claude|qwen|gemini)[-a-z0-9]*'"'"'s|round[- ]?[0-9]|[0-9](st|nd|rd|th) round|fix[- ]round|work[- ]order|gate finding|review finding|adversarial (gate|round)|PR ?#[0-9]+\)|'"$WP|$HANDOFF|$FINDING"')'
 PATTERN='(#|//|--|\*).*'"$MARKERS"
 ALLOW_FILE=.review-comment-allow
 # A shorter substring matches too many lines to say what it allows.
@@ -279,6 +293,31 @@ self_test() {
   run_file "ts delimiters in strings" pass 'OK \(0 allowlisted\)' '' src/a.ts $'const a = "/*";\nconst b = "codex round 7 failed";\nconst c = "*/";\n'
   run_file "html delimiter in string (over-reports)" fail 'page.html,line=2' '' page.html $'<p title="<!--">\n'"$inner"$'</p>\n'
   run_file "shell glob is not a comment" pass 'OK \(0 allowlisted\)' '' bin/x.sh $'ls /tmp/*\necho "codex round 7 failed"\n'
+
+  # Work-package labels, handoff section references and finding codes. Each
+  # marker has a planted case that must fail and legitimate text that must not.
+  run_file "marker WP-E"               fail 'src/x.py,line=1' '' src/x.py $'x = 1  # WP-E owns this retry\n'
+  run_file "marker WP3-B"              fail 'src/x.py,line=1' '' src/x.py $'x = 1  # kept for WP3-B\n'
+  run_file "marker WP4 batch"          fail 'src/x.py,line=1' '' src/x.py $'x = 1  # WP4 batch\n'
+  run_file "marker WP3 in docstring"   fail 'src/x.py,line=1' '' src/x.py $'"""Added in WP3 so callers retry."""\n'
+  run_file "no marker: wp-cli, wp-admin, wp-env, wp3xy" pass 'OK \(0 allowlisted\)' '' src/x.py $'x = 1  # runs wp-cli, wp-admin and wp-env; see wp3xy docs\n'
+  run_file "marker handoff §5b"        fail 'src/x.py,line=1' '' src/x.py $'x = 1  # see handoff §5b\n'
+  run_file "marker handoff section 5b" fail 'src/x.py,line=1' '' src/x.py $'x = 1  # see handoff section 5b\n'
+  run_file "marker handoff doc §2"     fail 'src/x.py,line=1' '' src/x.py $'x = 1  # handoff doc §2 says so\n'
+  run_file "no marker: spec §4.5, handoff without a section" pass 'OK \(0 allowlisted\)' '' src/x.py $'x = 1  # RFC 7231 §4.5 applies; the handoff section lists steps; §5b of the spec\n'
+  run_file "marker review R3-7"        fail 'src/x.py,line=1' '' src/x.py $'x = 1  # review R3-7: keep the retry\n'
+  run_file "marker finding R2b"        fail 'src/x.py,line=1' '' src/x.py $'x = 1  # finding R2b\n'
+  run_file "marker gate R3a-4"         fail 'src/x.py,line=1' '' src/x.py $'x = 1  # gate R3a-4\n'
+  run_file "marker findings P1-5"      fail 'src/x.py,line=1' '' src/x.py $'x = 1  # findings P1-5\n'
+  run_file "marker gate P2a"           fail 'src/x.py,line=1' '' src/x.py $'x = 1  # gate P2a\n'
+  run_file "marker review F2"          fail 'src/x.py,line=1' '' src/x.py $'x = 1  # review F2\n'
+  run_file "marker finding D4"         fail 'src/x.py,line=1' '' src/x.py $'x = 1  # finding: D4\n'
+  run_file "marker B2 (review)"        fail 'src/x.py,line=1' '' src/x.py $'x = 1  # B2 (review)\n'
+  run_file "marker R4a finding"        fail 'src/x.py,line=1' '' src/x.py $'x = 1  # R4a finding\n'
+  run_file "marker finding code in docstring" fail 'src/x.py,line=1' '' src/x.py $'"""Per review R3-7 the call retries."""\n'
+  run_file "no marker: P95, R1, hex, RFC, ADR, HTTP near review words" pass 'OK \(0 allowlisted\)' '' src/x.py $'x = 1  # review the gate P95 latency, R1 as a unit, #b2d4f2 and #D4D4D4, RFC 9110, ADR-0028 D8 gate, HTTP 404 and 502\n'
+  run_file "no marker: finding codes without a review word" pass 'OK \(0 allowlisted\)' '' src/x.py $'x = 1  # cell B2 and F2 key, D4 pin, R3-7 rack, P1-5 range\n'
+  run_file "no marker: gateway, round-robin, reviewer's" pass 'OK \(0 allowlisted\)' '' src/x.py $'x = 1  # gateway D4 and round-robin F2 on the reviewer\'s side\n'
 
   # Paths that hold the delimiters the old colon-joined records split on.
   # run_pair <name> <want> <expect> <allowlist> <path1> <body1> <path2> <body2>
