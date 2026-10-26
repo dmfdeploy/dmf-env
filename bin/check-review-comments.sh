@@ -390,6 +390,39 @@ self_test() {
   done
   rm -rf "$shim"
 
+  # A status write that stops part way leaves a record without its end marker.
+  # The git shim plants the partial record in a read-only file just as the
+  # targeted git grep starts, so the script's own write fails and the partial
+  # record stays. The planted file is clean, so a check that accepted the
+  # partial record would pass.
+  shim=$(mktemp -d)
+  # shellcheck disable=SC2016
+  printf '%s\n' '#!/bin/bash' \
+    'd=$("$REAL_MKTEMP" "$@") || exit' \
+    'printf "%s\n" "$d" > "$WORK_NOTE"' \
+    'printf "%s\n" "$d"' > "$shim/mktemp"
+  # shellcheck disable=SC2016
+  printf '%s\n' '#!/bin/bash' \
+    'if [ "$1" = grep ]; then for a in "$@"; do' \
+    '  if [ "$a" = -nIiE ]; then f="$(cat "$WORK_NOTE")/grep.rc"; printf "%s" "$PARTIAL" > "$f"; chmod 444 "$f"; fi' \
+    'done; fi' \
+    "exec \"$real_git\" \"\$@\"" > "$shim/git"
+  chmod +x "$shim/mktemp" "$shim/git"
+  local partial
+  for partial in '1' '1 do' '1 done'; do
+    git -C "$tmp" rm -q -r -f --ignore-unmatch -- . >/dev/null
+    printf '// a plain note\n' > "$tmp/a.ts"
+    git -C "$tmp" add a.ts
+    rc=0
+    out=$(cd "$tmp" && REAL_MKTEMP=$(command -v mktemp) WORK_NOTE="$shim/note" PARTIAL=$partial PATH="$shim:$PATH" bash "$self" 2>&1) || rc=$?
+    if [ "$rc" -ne 1 ] || ! printf '%s\n' "$out" | grep -q 'could not record the exit status of'; then
+      echo "FAIL  partial status record '$partial': expected exit 1 with an error, got exit $rc: $out"; failed=$((failed + 1))
+    else
+      echo "ok    partial status record '$partial' fails the check"
+    fi
+  done
+  rm -rf "$shim"
+
   if [ "$failed" -gt 0 ]; then
     echo "self-test: $failed case(s) failed." >&2
     return 1
@@ -951,19 +984,28 @@ fresh "$work/scan"
 # redirected block to a separate file. A missing or malformed status file means
 # the redirection or the status write failed, never that the command ran. Each
 # status write ends in "|| :" so that a failed write reaches read_status.
+# The record is "<digits> done" plus a newline. A write that stops part way
+# leaves a bare number, which would otherwise read as a real exit status, so
+# the end marker is what proves the write finished.
 # read_status <status file> <label>: print the recorded exit status.
 read_status() {
-  local s
-  s=$(cat "$1" 2>/dev/null) || s=""
+  local s nl n=""
+  nl=$'\n'
+  # The appended "x" keeps command substitution from stripping the final newline.
+  s=$(cat "$1" 2>/dev/null; printf x)
+  s=${s%x}
   case "$s" in
+    *" done$nl") n=${s%" done$nl"} ;;
+  esac
+  case "$n" in
     ''|*[!0-9]*)
       echo "::error::could not record the exit status of $2; refusing to pass unchecked" >&2
       exit 1 ;;
   esac
-  printf '%s\n' "$s"
+  printf '%s\n' "$n"
 }
 rm -f "$work/grep.rc"
-{ rc=0; git grep -z -nIiE "$PATTERN" ${tree:+"$tree"} -- . "${exclude[@]}" || rc=$?; echo "$rc" > "$work/grep.rc" || :; } > "$work/grep"
+{ rc=0; git grep -z -nIiE "$PATTERN" ${tree:+"$tree"} -- . "${exclude[@]}" || rc=$?; printf '%s done\n' "$rc" > "$work/grep.rc" || :; } > "$work/grep"
 rc=$(read_status "$work/grep.rc" "git grep")
 if [ "$rc" -gt 1 ]; then
   echo "::error::git grep failed (exit $rc); refusing to pass unchecked" >&2
@@ -973,7 +1015,7 @@ fi
 # Docstrings and block-comment bodies carry no comment leader, so scan them
 # separately into the same record shape.
 rm -f "$work/files.rc"
-{ scan_rc=0; scan_files || scan_rc=$?; echo "$scan_rc" > "$work/files.rc" || :; } > "$work/files"
+{ scan_rc=0; scan_files || scan_rc=$?; printf '%s done\n' "$scan_rc" > "$work/files.rc" || :; } > "$work/files"
 scan_rc=$(read_status "$work/files.rc" "the file listing")
 if [ "$scan_rc" -gt 1 ]; then
   echo "::error::git grep could not list files for the docstring and block-comment scan (exit $scan_rc); refusing to pass unchecked" >&2
