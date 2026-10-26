@@ -139,14 +139,28 @@ yaml_string_list() {
 
 # fail2ban_ignoreip <cidr-list>... — value for harden_fail2ban_ignoreip: loopback
 # plus the operator's SSH source CIDRs, so fail2ban never bans the control
-# plane. World-open ranges are dropped; exempting them would disable fail2ban.
+# plane. A /0 prefix covers every address of its family whatever the address
+# is spelled as (0.0.0.0/0, ::/0, 0:0:0:0:0:0:0:0/0, 198.51.100.7/0), and
+# exempting it would switch fail2ban off for that family, so the prefix length
+# decides, not the spelling. /0 is the line because it is the one prefix that
+# disables fail2ban outright; anything narrower still leaves addresses it can
+# ban. A prefix that is not a decimal number cannot be checked, so it is
+# dropped too.
 fail2ban_ignoreip() {
-    local item out="127.0.0.1/8 ::1"
+    local item prefix out="127.0.0.1/8 ::1"
     for item in ${*//,/ }; do
         case "$item" in
-            0.0.0.0/0|::/0) ;;
-            *) out="${out} ${item}" ;;
+            */*)
+                prefix="${item##*/}"
+                case "$prefix" in
+                    ''|*[!0-9]*) continue ;;
+                esac
+                # Strip leading zeros: /00 is /0.
+                prefix="${prefix#"${prefix%%[!0]*}"}"
+                [ -n "$prefix" ] || continue
+                ;;
         esac
+        out="${out} ${item}"
     done
     printf '%s' "$out"
 }

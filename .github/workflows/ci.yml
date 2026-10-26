@@ -98,6 +98,9 @@ jobs:
       - name: enroll-ssh-key
         run: |
           bash tests/enroll-ssh-key.sh
+      - name: fail2ban-ignoreip
+        run: |
+          bash tests/fail2ban-ignoreip.sh
       - name: unseal-openbao-tls
         run: |
           bash tests/unseal-openbao-tls.sh
