@@ -10,16 +10,21 @@
 # The password is typed at ssh's own prompt on /dev/tty. It never reaches argv,
 # a file, the environment or a variable of this script, and nothing caches it.
 #
-# Host key verification: StrictHostKeyChecking=yes is used throughout. The node's
-# host key must already be in ~/.ssh/known_hosts before running this script — verify
-# the fingerprint out of band (VPS console, provider panel) and add it once.
+# Host key verification: StrictHostKeyChecking=yes is used throughout, against
+# the env's own known_hosts file (<env>/ssh/known_hosts) and nothing else. The
+# node's host key must be in that file before running this script — verify the
+# fingerprint out of band (VPS console, provider panel) and add it once.
 # ssh-keyscan fetches the key over the same network a man-in-the-middle sits on,
 # so compare its fingerprint with the out-of-band one before trusting it:
 #
 #   ssh-keyscan <NODE_HOST> | ssh-keygen -lf -
-#   ssh-keyscan -H <NODE_HOST> >> ~/.ssh/known_hosts
+#   ssh-keyscan -H <NODE_HOST> >> <env>/ssh/known_hosts
 #
 # This protects the password from a man-in-the-middle that impersonates the node.
+# The user's ssh config still applies (a jump host or other connection settings
+# there are honoured, as Ansible honours them), but every option that decides
+# which host keys are trusted is set on the command line, where it overrides
+# any config file.
 #
 # fail2ban: enrollment is one connection with NumberOfPasswordPrompts=1, so a
 # mistyped password costs one failed attempt, not three, and a node that already
@@ -90,8 +95,18 @@ esac
 PUBKEY="$(ssh-keygen -y -f "$KEY")" || die "cannot derive the public key from ${KEY}"
 
 TARGET="${NODE_USER}@${NODE_HOST}"
+KNOWN_HOSTS="${DMF_ENV_SSH_DIR}/known_hosts"
+# Trust only keys in the env's known_hosts: no global file, no DNS (SSHFP)
+# records, and no host keys learned after login written back to the file.
 SSH_OPTS=(-i "$KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes
+          -o "UserKnownHostsFile=${KNOWN_HOSTS}" -o GlobalKnownHostsFile=/dev/null
+          -o VerifyHostKeyDNS=no -o UpdateHostKeys=no
           -o ConnectTimeout=10 -o LogLevel=ERROR)
+# KnownHostsCommand (OpenSSH 8.5+) can supply trusted keys from a program; turn
+# it off where ssh knows the option. An older ssh cannot be configured with it.
+if ssh -F /dev/null -G -o KnownHostsCommand=none localhost >/dev/null 2>&1; then
+    SSH_OPTS+=(-o KnownHostsCommand=none)
+fi
 
 # ssh_failure_cause <ssh stderr> — name the likely cause in operator terms.
 ssh_failure_cause() {
@@ -99,11 +114,11 @@ ssh_failure_cause() {
         # ssh ends both of the next two cases with "Host key verification
         # failed.", so match their specific lines before that generic one.
         *"REMOTE HOST IDENTIFICATION HAS CHANGED"*|*"has changed and you have requested strict checking"*)
-            echo "the host key of ${NODE_HOST} differs from the one in known_hosts. This can be an attack on the connection; no password was sent. If you rebuilt the node, verify its new fingerprint out of band (VPS console or provider panel), then replace the entry: ssh-keygen -R ${NODE_HOST}" ;;
+            echo "the host key of ${NODE_HOST} differs from the one in ${KNOWN_HOSTS}. This can be an attack on the connection; no password was sent. If you rebuilt the node, verify its new fingerprint out of band (VPS console or provider panel), then replace the entry: ssh-keygen -R ${NODE_HOST} -f ${KNOWN_HOSTS}" ;;
         *"host key is known for"*|*"not in the list of known hosts"*)
-            echo "the host key of ${NODE_HOST} is not in known_hosts, so no password was sent. Compare the fingerprint from ssh-keyscan ${NODE_HOST} | ssh-keygen -lf - with the one shown out of band (VPS console or provider panel); if they match, add it: ssh-keyscan -H ${NODE_HOST} >> ~/.ssh/known_hosts" ;;
+            echo "the host key of ${NODE_HOST} is not in ${KNOWN_HOSTS}, so no password was sent. Compare the fingerprint from ssh-keyscan ${NODE_HOST} | ssh-keygen -lf - with the one shown out of band (VPS console or provider panel); if they match, add it: ssh-keyscan -H ${NODE_HOST} >> ${KNOWN_HOSTS}" ;;
         *"Host key verification failed"*)
-            echo "ssh could not verify the host key of ${NODE_HOST}, so no password was sent; check its entry in ~/.ssh/known_hosts against the fingerprint shown out of band" ;;
+            echo "ssh could not verify the host key of ${NODE_HOST}, so no password was sent; check its entry in ${KNOWN_HOSTS} against the fingerprint shown out of band" ;;
         *"Permission denied"*)
             echo "${NODE_HOST} rejected our credentials: wrong password for ${NODE_USER}, or the env key is not in that user's authorized_keys" ;;
         *"Connection refused"*)

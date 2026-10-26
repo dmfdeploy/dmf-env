@@ -24,6 +24,7 @@ export DMF_DATA_ROOT="${WORK_DIR}/dmf-data"
 export SSH_LOG="${WORK_DIR}/ssh.log"
 ENV_ID="test-enroll"
 INV_DIR="${DMF_DATA_ROOT}/envs/${ENV_ID}/inventory"
+ENV_KNOWN_HOSTS="${DMF_DATA_ROOT}/envs/${ENV_ID}/ssh/known_hosts"
 mkdir -p "${INV_DIR}/group_vars/all" "${WORK_DIR}/bin"
 
 ssh-keygen -t ed25519 -N "" -f "${WORK_DIR}/node-key" -C "enroll-test" >/dev/null 2>&1
@@ -37,10 +38,24 @@ printf 'ansible_ssh_private_key_file: "%s"\n' "${WORK_DIR}/node-key" \
   > "${INV_DIR}/group_vars/all/main.yml"
 
 # Fake ssh: the gate call is the one carrying BatchMode=yes. FAKE_ENROLL_ERR /
-# FAKE_GATE_ERR make the matching call fail with that stderr.
+# FAKE_GATE_ERR make the matching call fail with that stderr. ssh -G (resolve
+# the config, never connect) goes to the real ssh. For each connection call the
+# fake also logs which known-hosts sources the real ssh would use, with
+# FAKE_USER_CONFIG standing in for the user's ~/.ssh/config: -F reads a file
+# in its place, with the same precedence.
+REAL_SSH="$(command -v ssh || true)"
+export REAL_SSH
 cat > "${WORK_DIR}/bin/ssh" <<'EOF'
 #!/usr/bin/env bash
+for a in "$@"; do
+  [ "$a" = "-G" ] && exec "$REAL_SSH" "$@"
+done
 printf 'ARGS %s\n' "$*" >> "$SSH_LOG"
+if [ -n "${REAL_SSH:-}" ]; then
+  "$REAL_SSH" -G -F "${FAKE_USER_CONFIG:-/dev/null}" "$@" 2>/dev/null </dev/null |
+    grep -iE '^(userknownhostsfile|globalknownhostsfile|knownhostscommand|stricthostkeychecking|verifyhostkeydns) ' |
+    sed 's/^/RESOLVED /' >> "$SSH_LOG"
+fi
 case "$*" in
   *BatchMode=yes*) err="${FAKE_GATE_ERR:-}" ;;
   *)               err="${FAKE_ENROLL_ERR:-}"; printf 'STDIN %s\n' "$(cat)" >> "$SSH_LOG" ;;
@@ -111,9 +126,9 @@ FAKE_ENROLL_ERR="No ED25519 host key is known for 192.0.2.10 and you have reques
 Host key verification failed." run "$ENV_ID"
 unset FAKE_ENROLL_ERR
 [ "$RC" -ne 0 ] || fail "expected a non-zero exit"
-[[ "$OUT" == *"enrollment failed"*"not in known_hosts"* ]] || fail "unknown key not named: ${OUT}"
+[[ "$OUT" == *"enrollment failed"*"is not in ${ENV_KNOWN_HOSTS}"* ]] || fail "unknown key not named: ${OUT}"
 [[ "$OUT" == *"out of band"* ]] || fail "no out-of-band verification step: ${OUT}"
-[[ "$OUT" == *"differs from the one in known_hosts"* ]] && fail "unknown key reported as changed: ${OUT}"
+[[ "$OUT" == *"differs from the one in"* ]] && fail "unknown key reported as changed: ${OUT}"
 grep -q 'BatchMode=yes' "$SSH_LOG" && fail "gate ran after a failed enrollment"
 echo "  PASS"
 
@@ -123,11 +138,44 @@ Host key for 192.0.2.10 has changed and you have requested strict checking.
 Host key verification failed." run "$ENV_ID"
 unset FAKE_ENROLL_ERR
 [ "$RC" -ne 0 ] || fail "expected a non-zero exit"
-[[ "$OUT" == *"differs from the one in known_hosts"*"out of band"* ]] || fail "changed key not named: ${OUT}"
-[[ "$OUT" == *"is not in known_hosts"* ]] && fail "changed key reported as unknown: ${OUT}"
+[[ "$OUT" == *"differs from the one in ${ENV_KNOWN_HOSTS}"*"out of band"* ]] || fail "changed key not named: ${OUT}"
+[[ "$OUT" == *"is not in "* ]] && fail "changed key reported as unknown: ${OUT}"
 echo "  PASS"
 
-echo "Test 8: an unknown env is refused without touching ssh..."
+echo "Test 8: a user ssh config cannot change where host keys are trusted from..."
+if [ -z "$REAL_SSH" ]; then
+  echo "  SKIP: no real ssh to resolve the config"
+else
+  # A user config that points every host at another known_hosts file (one
+  # holding a key the env never verified) and adds the other trust sources.
+  EVIL_KNOWN_HOSTS="${WORK_DIR}/elsewhere/known_hosts"
+  cat > "${WORK_DIR}/user-ssh-config" <<CFG
+Host *
+  UserKnownHostsFile ${EVIL_KNOWN_HOSTS}
+  GlobalKnownHostsFile ${EVIL_KNOWN_HOSTS}
+  StrictHostKeyChecking no
+  VerifyHostKeyDNS yes
+CFG
+  if "$REAL_SSH" -F /dev/null -G -o KnownHostsCommand=none localhost >/dev/null 2>&1; then
+    echo "  KnownHostsCommand /bin/cat ${EVIL_KNOWN_HOSTS}" >> "${WORK_DIR}/user-ssh-config"
+  fi
+  FAKE_USER_CONFIG="${WORK_DIR}/user-ssh-config" run "$ENV_ID"
+  [ "$RC" -eq 0 ] || fail "expected exit 0, got ${RC}: ${OUT}"
+  resolved="$(grep '^RESOLVED' "$SSH_LOG")"
+  [ "$(grep -c '^ARGS' "$SSH_LOG")" -eq 2 ] || fail "expected two connection calls"
+  [ "$(grep -c "^RESOLVED userknownhostsfile ${ENV_KNOWN_HOSTS}\$" "$SSH_LOG")" -eq 2 ] \
+    || fail "a call does not trust the env's known_hosts alone: ${resolved}"
+  [ "$(grep -c '^RESOLVED globalknownhostsfile /dev/null$' "$SSH_LOG")" -eq 2 ] \
+    || fail "a call reads another global known_hosts: ${resolved}"
+  [ "$(grep -c '^RESOLVED stricthostkeychecking true$' "$SSH_LOG")" -eq 2 ] \
+    || fail "a call does not check host keys strictly: ${resolved}"
+  [ "$(grep -c '^RESOLVED verifyhostkeydns false$' "$SSH_LOG")" -eq 2 ] \
+    || fail "a call trusts host keys from DNS: ${resolved}"
+  grep -q "${EVIL_KNOWN_HOSTS}" <<< "$resolved" && fail "a call reads the user config's known_hosts: ${resolved}"
+  echo "  PASS"
+fi
+
+echo "Test 9: an unknown env is refused without touching ssh..."
 run no-such-env
 [ "$RC" -ne 0 ] || fail "expected a non-zero exit"
 [ ! -s "$SSH_LOG" ] || fail "ssh was called for an unknown env"
