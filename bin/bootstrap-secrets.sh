@@ -474,7 +474,7 @@ metadata_provider = (metadata.get('provider') or '').lower()
 env_label_meta = metadata.get('env_id') or metadata.get('environment') or ''
 
 if metadata_provider in ('sandbox', 'local', 'none'):
-    # Sandbox / local profiles (WP1S, ADR-0031 Profile 1) have no cloud
+    # Sandbox / local profiles (ADR-0031 Profile 1) have no cloud
     # provider; the cloud-token validation chain below is skipped for them.
     provider = metadata_provider
 elif metadata_provider in ('hetzner', 'aliyun', 'aws'):

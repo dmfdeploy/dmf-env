@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# recreate-sandbox-vm.sh — (re)create the WP1S sandbox Lima VM substrate.
+# recreate-sandbox-vm.sh — (re)create the sandbox Lima VM substrate.
 #
 # PLATFORM: macOS + Lima ONLY — a maintainer convenience, NOT the paved
 # onboarding path. It hard-requires limactl/Lima (vmType vz, socket_vmnet on
