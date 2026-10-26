@@ -98,7 +98,36 @@ unset FAKE_ENROLL_ERR
 [[ "$OUT" == *"did not answer on port 22"* ]] || fail "cause not named: ${OUT}"
 echo "  PASS"
 
-echo "Test 5: an unknown env is refused without touching ssh..."
+echo "Test 5: both calls refuse a host key that is not already trusted..."
+run "$ENV_ID"
+[ "$(grep -c '^ARGS.*StrictHostKeyChecking=yes' "$SSH_LOG")" -eq 2 ] \
+  || fail "a call does not require a known host key: $(grep '^ARGS' "$SSH_LOG")"
+grep -q 'accept-new\|StrictHostKeyChecking=no' "$SSH_LOG" && fail "a call trusts a first-seen host key"
+echo "  PASS"
+
+# The stderr below is what OpenSSH prints with StrictHostKeyChecking=yes.
+echo "Test 6: an unknown host key fails before any password, named as unknown..."
+FAKE_ENROLL_ERR="No ED25519 host key is known for 192.0.2.10 and you have requested strict checking.
+Host key verification failed." run "$ENV_ID"
+unset FAKE_ENROLL_ERR
+[ "$RC" -ne 0 ] || fail "expected a non-zero exit"
+[[ "$OUT" == *"enrollment failed"*"not in known_hosts"* ]] || fail "unknown key not named: ${OUT}"
+[[ "$OUT" == *"out of band"* ]] || fail "no out-of-band verification step: ${OUT}"
+[[ "$OUT" == *"differs from the one in known_hosts"* ]] && fail "unknown key reported as changed: ${OUT}"
+grep -q 'BatchMode=yes' "$SSH_LOG" && fail "gate ran after a failed enrollment"
+echo "  PASS"
+
+echo "Test 7: a changed host key fails before any password, named as changed..."
+FAKE_ENROLL_ERR="@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @
+Host key for 192.0.2.10 has changed and you have requested strict checking.
+Host key verification failed." run "$ENV_ID"
+unset FAKE_ENROLL_ERR
+[ "$RC" -ne 0 ] || fail "expected a non-zero exit"
+[[ "$OUT" == *"differs from the one in known_hosts"*"out of band"* ]] || fail "changed key not named: ${OUT}"
+[[ "$OUT" == *"is not in known_hosts"* ]] && fail "changed key reported as unknown: ${OUT}"
+echo "  PASS"
+
+echo "Test 8: an unknown env is refused without touching ssh..."
 run no-such-env
 [ "$RC" -ne 0 ] || fail "expected a non-zero exit"
 [ ! -s "$SSH_LOG" ] || fail "ssh was called for an unknown env"

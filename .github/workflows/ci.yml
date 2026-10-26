@@ -95,6 +95,9 @@ jobs:
       - name: remove-env-data-root
         run: |
           bash tests/remove-env-data-root.sh
+      - name: enroll-ssh-key
+        run: |
+          bash tests/enroll-ssh-key.sh
       - name: unseal-openbao-tls
         run: |
           bash tests/unseal-openbao-tls.sh
