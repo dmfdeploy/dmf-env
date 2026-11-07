@@ -347,8 +347,10 @@ elif [ "$IS_SANDBOX" -eq 1 ] && [ -r "$KEYS_JSON" ] && jq -e '(.unseal_keys_hex 
     SHARE_SOURCE="keys-json"
 fi
 
-# macOS Keychain CLI is only needed for non-sandbox (3-of-5 Shamir) profiles.
-if [ "$IS_SANDBOX" -ne 1 ]; then
+# macOS Keychain CLI is only needed to unseal a non-sandbox (3-of-5 Shamir)
+# profile. The status modes read seal state over ssh and never touch it, so
+# they also run on a host without `security`.
+if [ "$IS_SANDBOX" -ne 1 ] && [ "$MODE" = "unseal" ]; then
     require security    # macOS Keychain CLI
 fi
 
