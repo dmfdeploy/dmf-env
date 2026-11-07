@@ -104,6 +104,9 @@ jobs:
       - name: unseal-openbao-tls
         run: |
           bash tests/unseal-openbao-tls.sh
+      - name: upgrade-in-place-guard
+        run: |
+          bash tests/upgrade-in-place-guard.sh
 
   review-comments:
     # Comments state why, not which review prompted them
