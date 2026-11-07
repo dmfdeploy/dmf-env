@@ -2,7 +2,8 @@
 # upgrade-in-place.sh — idempotent upgrade of an existing DMF env to current main.
 #
 # Canonical upgrade sequence (6 stages):
-#   Stage 1 — unseal           — verify OpenBao is unsealed
+#   Stage 1 — unseal           — verify every OpenBao pod is unsealed, then run
+#                                the rolling-restart guard (102-openbao-ha-guard.yml)
 #   Stage 2 — seed-bao         — backfill platform+app secrets into OpenBao
 #   Stage 3 — pre-seed         — prepare cluster state for apps
 #   Stage 4 — post-seed        — deploy apps (dependent on seed-bao secrets)
@@ -21,16 +22,23 @@
 # the new CCM/platform on its OLD k3s (acceptable in experiment phase; a true
 # k3s migration requires a separate sequential plan).
 #
+# The playbooks of stages 3-5 can restart an OpenBao pod, and a restarted pod is
+# sealed. Stage 1 therefore refuses while any pod is sealed. On a Raft cluster the
+# guard also refuses while any pod is not a healthy voter, and it needs an ops-admin
+# token in OPENBAO_GUARD_TOKEN. On a single replica the guard passes when that pod
+# is unsealed. No flag skips the guard. Unseal each pod with
+# bin/unseal-openbao.sh (OPENBAO_POD=<pod>) before you run the upgrade again.
+#
 # Usage:
 #   bin/upgrade-in-place.sh <ENV_NAME>
 #   bin/upgrade-in-place.sh <ENV_NAME> --yes (skip confirm prompt)
-#   bin/upgrade-in-place.sh <ENV_NAME> --skip-unseal-check (skip sealed check)
+#   bin/upgrade-in-place.sh <ENV_NAME> --skip-unseal-check (skip the stage 1 seal check; the guard still runs)
 #   bin/upgrade-in-place.sh <ENV_NAME> --dry-run (plan without mutating seed-bao)
 #
 # Exit codes:
 #   0   upgraded successfully, converged
 #   1   bad arg / config
-#   2   OpenBao unreachable or sealed
+#   2   OpenBao unreachable, a pod sealed, or the restart guard refused
 #   3   seed-bao failed
 #   4   playbook stage failed
 #   5   convergence gate failed
@@ -114,13 +122,16 @@ echo ""
 if [ "$SKIP_UNSEAL_CHECK" -ne 1 ]; then
   section "Stage 1: OpenBao unsealed precheck"
 
-  status_output=$("$SCRIPT_DIR/unseal-openbao.sh" "$ENV_NAME" --status 2>&1 || true)
+  status_rc=0
+  status_output=$("$SCRIPT_DIR/unseal-openbao.sh" "$ENV_NAME" --status-all 2>&1) || status_rc=$?
 
-  if echo "$status_output" | grep -q '"sealed": false'; then
-    info "OpenBao is unsealed — proceeding"
-  elif echo "$status_output" | grep -q '"sealed": true'; then
-    err "OpenBao is sealed — unseal first:"
-    err "  bin/unseal-openbao.sh $ENV_NAME"
+  if [ "$status_rc" -eq 0 ]; then
+    printf '%s\n' "$status_output" | grep -E ': (un)?sealed$' || true
+    info "every OpenBao pod is unsealed — proceeding"
+  elif [ "$status_rc" -eq 6 ]; then
+    printf '%s\n' "$status_output" | grep -E ': (un)?sealed$' >&2 || true
+    err "at least one OpenBao pod is sealed — unseal each sealed pod first:"
+    err "  OPENBAO_POD=<pod> bin/unseal-openbao.sh $ENV_NAME"
     err "  (or re-run vertical-security/100-openbao.yml)"
     err "then re-run this upgrade."
     exit 2
@@ -132,6 +143,22 @@ if [ "$SKIP_UNSEAL_CHECK" -ne 1 ]; then
   fi
 else
   section "Stage 1: OpenBao unsealed precheck (SKIPPED)"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 1b: restart guard. No flag skips it.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Guard before any step that can restart an OpenBao pod. It is read-only, so it
+# runs without --check even in a dry run: ansible skips command tasks under
+# --check, and a skipped guard would pass without looking. --skip-unseal-check
+# skips only the seal precheck of stage 1. It never skips this guard, because the
+# guard also reads the Raft state, which the seal precheck does not.
+section "Stage 1b: OpenBao restart guard"
+if ! "$SCRIPT_DIR/run-playbook.sh" "$ENV_NAME" "../dmf-infra/k3s-lab-bootstrap/playbooks/vertical-security/102-openbao-ha-guard.yml"; then
+  err "the restart guard refused — no OpenBao pod was restarted and nothing changed"
+  err "fix what it reports (sealed pod, a pod that is not a healthy voter, no OPENBAO_GUARD_TOKEN on a cluster)"
+  exit 2
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────

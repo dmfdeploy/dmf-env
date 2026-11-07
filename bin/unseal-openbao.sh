@@ -32,6 +32,7 @@
 # Usage:
 #   bin/unseal-openbao.sh <ENV_NAME>                # interactive 3-share unseal
 #   bin/unseal-openbao.sh <ENV_NAME> --status       # read-only seal status (no secrets touched)
+#   bin/unseal-openbao.sh <ENV_NAME> --status-all   # seal state of every OpenBao pod, one line each
 #   bin/unseal-openbao.sh <ENV_NAME> --force-rerun  # feed shares even if already unsealed
 #   bin/unseal-openbao.sh <ENV_NAME> --yes          # skip the interactive confirm prompt
 #
@@ -62,6 +63,9 @@
 #   5   unseal failed mid-stream
 #   6   still sealed after feeding 3 shares
 #   7   TLS verification against OpenBao failed (never bypassed)
+#
+# --status-all exits 0 when every pod is unsealed, 6 when any pod is sealed, and
+# 4 when no pod is found or a pod cannot be read.
 
 set -euo pipefail
 
@@ -293,6 +297,7 @@ SKIP_CONFIRM=0
 for arg in "$@"; do
     case "$arg" in
         --status)        MODE="status" ;;
+        --status-all)    MODE="status-all" ;;
         --force-rerun)   FORCE_RERUN=1 ;;
         --yes|-y)        SKIP_CONFIRM=1 ;;
         -h|--help)
@@ -353,6 +358,35 @@ info "ssh target:   $SSH_TARGET"
 info "openbao pod:  $OPENBAO_NAMESPACE/$OPENBAO_POD (bao in-pod, TLS verified)"
 info "share dir:    $SHARE_DIR"
 info "keychain svc: $SHARE_KEYCHAIN_NAME"
+
+# ── Status-all mode ──────────────────────────────────────────────────────
+# One line per pod: "<pod>: unsealed|sealed|unreadable". A single-replica site
+# has one pod, so the result is that pod's seal state. A Raft cluster has one
+# line per pod, and one sealed pod fails the check.
+if [ "$MODE" = "status-all" ]; then
+    section "OpenBao seal status, every pod"
+    pods="$(ssh "${ssh_opts[@]}" "$SSH_TARGET" \
+        sudo -n kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml \
+        -n "$OPENBAO_NAMESPACE" get pods -l app.kubernetes.io/name=openbao \
+        -o name 2>/dev/null </dev/null | sed 's#^pod/##' | sort || true)"
+    if [ -z "$pods" ]; then
+        err "no OpenBao pod found in $OPENBAO_NAMESPACE on $SSH_TARGET"
+        exit 4
+    fi
+    rc=0
+    while IFS= read -r OPENBAO_POD; do
+        if ! fetch_status; then
+            info "$OPENBAO_POD: unreadable"
+            [ "$rc" -eq 6 ] || rc=4
+        elif [ "$(printf '%s' "$STATUS_JSON" | jq -r '.sealed')" = "true" ]; then
+            info "$OPENBAO_POD: sealed"
+            rc=6
+        else
+            info "$OPENBAO_POD: unsealed"
+        fi
+    done <<< "$pods"
+    exit "$rc"
+fi
 
 # ── Status mode ──────────────────────────────────────────────────────────
 if [ "$MODE" = "status" ]; then
