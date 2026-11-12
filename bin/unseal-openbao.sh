@@ -16,10 +16,11 @@
 # logs stream content.
 #
 # TLS: every OpenBao call runs `bao` inside the pod, where the pod spec sets
-# BAO_ADDR=https://127.0.0.1:8200 and BAO_CACERT to the certificate the pod
-# serves (issued for 127.0.0.1). bao verifies that certificate. The wrapper
-# clears any *_SKIP_VERIFY variable for each call and has no path that skips
-# verification. A TLS failure stops the run with exit 7 and says what to check.
+# BAO_ADDR=https://127.0.0.1:8200 and BAO_CACERT to the CA that signed the
+# certificate the pod serves (issued for 127.0.0.1). bao verifies that
+# certificate against the CA. The wrapper clears any *_SKIP_VERIFY variable for
+# each call and has no path that skips verification. A TLS failure stops the
+# run with exit 7 and says what to check.
 #
 # Procedure (3-of-5 quorum, the routine break-glass path):
 #   share 1 — JuiceFS  <SHARE_DIR>/share-1.json (.key, base64)
@@ -239,10 +240,11 @@ die_tls() {
     err "The wrapper never skips certificate verification. Check that:"
     err "  - the openbao-tls certificate is ready and current:"
     err "      ssh $SSH_TARGET 'sudo kubectl -n $OPENBAO_NAMESPACE get certificate,secret'"
-    err "  - BAO_CACERT in the pod names the certificate the pod serves"
-    err "    (pod spec default: /openbao/config/tls/tls.crt)"
+    err "  - BAO_CACERT in the pod names the CA that signed the certificate the pod serves"
+    err "    (pod spec default: /openbao/config/tls/ca.crt)"
     err "  - the certificate covers the BAO_ADDR host (pod spec default: 127.0.0.1)"
-    err "  - the pod restarted after the last certificate rotation"
+    err "  - 320-cert-manager.yml ran after the last certificate renewal, so the pod"
+    err "    serves the current certificate (the play reloads it in each pod)"
     exit 7
 }
 
