@@ -69,6 +69,23 @@ wizard, never committed):
     ssh/                     per-env keypair (private key lives in the sops bundle)
 ```
 
+## Prerequisites
+
+Install these tools before you run the wizard, the wrappers or the tests:
+
+| Tool | Used for |
+|---|---|
+| `sops` and `age` | Encrypting and decrypting the secrets bundle. The wizard also needs `age-keygen`, which ships with `age`. |
+| [`yq`](https://github.com/mikefarah/yq) v4 (the Go version) | Reading the manifest in the non-interactive wizard, and in `tests/wizard-noninteractive-parity.sh`. |
+| `jq` | The `bin/` scripts and the tests that parse JSON. |
+
+Install the Go `yq` from [mikefarah/yq](https://github.com/mikefarah/yq), for
+example with `brew install yq`. Don't use the Python `yq` wrapper that
+`pip install yq` or some Linux distributions provide. It has the same name, but
+it doesn't accept `-o=json`, which the tests call. It fails with
+`jq: Unknown option -o=json`. To check which one you have, run `yq --version`.
+The Go version prints `yq (https://github.com/mikefarah/yq/) version v4.x.x`.
+
 ## Quick start
 
 > **Check out the sibling repos first.** These commands expect `dmf-env` to sit
@@ -98,7 +115,7 @@ Teardown: `rm -rf ~/.dmfdeploy/envs/<env>`.
 
 ### Hetzner (cloud)
 
-Pre-reqs: `sops` + `age` installed, an age key at `~/.config/sops/age/keys.txt`.
+Pre-reqs: the [prerequisite tools](#prerequisites) installed, an age key at `~/.config/sops/age/keys.txt`.
 
 ```bash
 cd dmf-env
