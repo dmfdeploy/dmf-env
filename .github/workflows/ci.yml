@@ -107,6 +107,9 @@ jobs:
       - name: upgrade-in-place-guard
         run: |
           bash tests/upgrade-in-place-guard.sh
+      - name: acquire-temp-root
+        run: |
+          bash tests/acquire-temp-root.sh
 
   review-comments:
     # Comments state why, not which review prompted them
