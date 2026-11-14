@@ -858,17 +858,96 @@ with open(sys.argv[1], 'w') as f:
 # the script must elevate.
 #
 # This mirrors the "Rotate OpenBao ops-admin password" play in
-# playbooks/vertical-orchestration/120-ops-admin-rotation.yml: read 3 Shamir
-# shares from the breakglass JSON, run `bao operator generate-root` to mint
-# a one-shot root token, perform writes, then `bao token revoke -self`.
+# playbooks/vertical-orchestration/120-ops-admin-rotation.yml: log in as
+# ops-admin, read 3 Shamir shares from the breakglass JSON, run
+# `bao operator generate-root` with the login token to mint a one-shot root
+# token, perform writes, then revoke both tokens with `bao token revoke -self`.
+# OpenBao 2.6 and later accept generate-root only from an authenticated caller.
 # Rationale recorded in the implementation plan §22 (added with this commit).
 #
 # Globals set by acquire_temp_root and consumed by helpers below:
 #   BAO_POD          OpenBao pod name in the openbao namespace
 #   BAO_ROOT_TOKEN   The decoded one-shot root token (no_log domain)
+#   BAO_LOGIN_TOKEN  The ops-admin login token that authorizes generate-root
+#   BAO_LOGIN_ACCESSOR, BAO_ROOT_ACCESSOR  Accessors, kept for the failure message of
+#                    a revoke that does not work
+#   BAO_ISSUANCE_UNCERTAIN  1 from the moment the last share was accepted until the
+#                    root token is decoded: a token may exist that nothing can revoke
 
 BAO_POD=""
+
+# find_active_bao_pod — set BAO_POD to the one pod that reports itself as the active
+# node. `bao status -format=json` needs no token and prints "is_self": true on the active
+# node of a cluster only (the field is omitted when false: command/format.go in v2.5.2
+# and internal/command/format.go in v2.7.2). A standby answers the legacy generate-root
+# endpoints with a 500, and a sealed pod reports no is_self, so the first pod of the list is
+# no safe choice. Stops when no pod, or more than one, reports itself as active.
+find_active_bao_pod() {
+  local pods pod status active=()
+  pods="$(remote_kubectl get pods -n openbao -l app.kubernetes.io/name=openbao -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)" || pods=""
+  if [ -z "${pods}" ]; then
+    echo "ERROR: no OpenBao pod found in namespace 'openbao'" >&2
+    echo "  Is OpenBao installed? Run the pre-seed provision first." >&2
+    exit 1
+  fi
+  while IFS= read -r pod; do
+    [ -n "${pod}" ] || continue
+    status="$(remote_kubectl exec -n openbao "${pod}" -- bao status -format=json 2>/dev/null || true)"
+    if [ "$(printf '%s' "${status}" | jq -r '.is_self // false' 2>/dev/null)" = "true" ]; then
+      active+=("${pod}")
+    fi
+  done < <(printf '%s
+' "${pods}" | tr ' ' '
+')
+  if [ "${#active[@]}" -ne 1 ]; then
+    echo "ERROR: expected exactly one active OpenBao pod, found ${#active[@]} among: ${pods}" >&2
+    echo "  Unseal every pod (bin/unseal-openbao.sh) and wait until one pod leads." >&2
+    exit 1
+  fi
+  BAO_POD="${active[0]}"
+}
 BAO_ROOT_TOKEN=""
+BAO_LOGIN_TOKEN=""
+BAO_LOGIN_ACCESSOR=""
+BAO_ROOT_ACCESSOR=""
+BAO_ISSUANCE_UNCERTAIN=0
+BAO_REVOKE_FAILED=0
+# A failed revoke is tried this many times, this many seconds apart.
+BAO_REVOKE_RETRIES="${BAO_REVOKE_RETRIES:-3}"
+BAO_REVOKE_RETRY_DELAY="${BAO_REVOKE_RETRY_DELAY:-2}"
+
+# bao_generate_root ARGS... — run `bao operator generate-root ARGS...` in the pod.
+# The login token goes to the pod on the first line of stdin, and the caller's
+# stdin follows it, so the token and the shares stay out of every local, ssh and
+# kubectl argument.
+# A caller with nothing to send redirects stdin from /dev/null.
+bao_generate_root() {
+  # shellcheck disable=SC2016
+  { printf '%s\n' "${BAO_LOGIN_TOKEN}"; cat; } | \
+    remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
+      IFS= read -r BAO_TOKEN
+      export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
+      exec bao operator generate-root "$@"
+    ' bao_generate_root "$@"
+}
+
+# bao_generate_root_otp OTP ARGS... — the same for the calls that carry the OTP. The
+# token and the OTP are the first two lines of stdin, so the OTP stays out of every
+# local, ssh and kubectl argument. It is visible in the arguments of the bao process
+# inside the pod while the command runs, because the CLI takes it only as a flag. It
+# is single use and worthless without the encoded token.
+bao_generate_root_otp() {
+  local otp="$1"
+  shift
+  # shellcheck disable=SC2016
+  { printf '%s\n%s\n' "${BAO_LOGIN_TOKEN}" "${otp}"; cat; } | \
+    remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
+      IFS= read -r BAO_TOKEN
+      IFS= read -r OTP
+      export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
+      exec bao operator generate-root "$@" -otp="$OTP"
+    ' bao_generate_root_otp "$@"
+}
 
 acquire_temp_root() {
   local env_name="$1"
@@ -909,12 +988,30 @@ acquire_temp_root() {
     exit 1
   fi
 
+  # Log in as ops-admin. The password reaches the pod on stdin (`password=-`).
+  # The EXIT trap goes in now, so a failure below still revokes the login token.
+  local ops_user ops_password login
+  ops_user="$(jq -r '.ops_admin_username // empty' "${breakglass_file}" 2>/dev/null)" || ops_user=""
+  ops_password="$(jq -r '.ops_admin_password // empty' "${breakglass_file}" 2>/dev/null)" || ops_password=""
+  if [ -z "${ops_user}" ] || [ -z "${ops_password}" ]; then
+    echo "ERROR: breakglass file lacks ops_admin_username or ops_admin_password: ${breakglass_file}" >&2
+    exit 1
+  fi
+  login="$(printf '%s' "${ops_password}" | remote_kubectl exec -i -n openbao "${BAO_POD}" -- bao write -format=json "auth/userpass/login/${ops_user}" password=- 2>/dev/null)" || login=""
+  BAO_LOGIN_TOKEN="$(printf '%s' "${login}" | jq -r '.auth.client_token // empty' 2>/dev/null)" || BAO_LOGIN_TOKEN=""
+  BAO_LOGIN_ACCESSOR="$(printf '%s' "${login}" | jq -r '.auth.accessor // empty' 2>/dev/null)" || BAO_LOGIN_ACCESSOR=""
+  if [ -z "${BAO_LOGIN_TOKEN}" ]; then
+    echo "ERROR: ops-admin login failed" >&2
+    exit 1
+  fi
+  trap 'revoke_temp_root' EXIT INT TERM
+
   # Cancel any stale generate-root attempt left behind by a previous failed run.
-  remote_kubectl exec -n openbao "${BAO_POD}" -- bao operator generate-root -cancel >/dev/null 2>&1 || true
+  bao_generate_root -cancel </dev/null >/dev/null 2>&1 || true
 
   # Generate OTP for the root-generation ceremony.
   local otp
-  otp="$(remote_kubectl exec -n openbao "${BAO_POD}" -- bao operator generate-root -generate-otp -format=json 2>/dev/null | jq -r '.otp // empty')"
+  otp="$(bao_generate_root -generate-otp -format=json </dev/null 2>/dev/null | jq -r '.otp // empty')"
   if [ -z "${otp}" ]; then
     echo "ERROR: failed to generate root-generation OTP" >&2
     exit 1
@@ -922,21 +1019,25 @@ acquire_temp_root() {
 
   # Init the ceremony with the OTP and capture the nonce.
   local nonce
-  nonce="$(remote_kubectl exec -n openbao "${BAO_POD}" -- bao operator generate-root -init -otp="${otp}" -format=json 2>/dev/null | jq -r '.nonce // empty')"
+  nonce="$(bao_generate_root_otp "${otp}" -init -format=json </dev/null 2>/dev/null | jq -r '.nonce // empty')"
   if [ -z "${nonce}" ]; then
     echo "ERROR: failed to start root-generation attempt" >&2
     exit 1
   fi
 
   # Submit each share via stdin. The last share's response carries
-  # `encoded_token` (older bao versions used `encoded_root_token`).
-  local share encoded_token=""
+  # `encoded_token` (older bao versions used `encoded_root_token`). Once the last
+  # share is accepted OpenBao has issued a root token, so a failure from then until
+  # the decode leaves a token that this script cannot revoke: the cleanup says so.
+  local share encoded_token="" submitted=0
   while IFS= read -r share; do
     [ -n "${share}" ] || continue
     local result
-    result="$(printf '%s' "${share}" | remote_kubectl exec -i -n openbao "${BAO_POD}" -- bao operator generate-root -nonce="${nonce}" -format=json -)" || {
+    submitted=$((submitted + 1))
+    result="$(printf '%s' "${share}" | bao_generate_root -nonce="${nonce}" -format=json -)" || {
       echo "ERROR: Shamir share submission failed" >&2
-      remote_kubectl exec -n openbao "${BAO_POD}" -- bao operator generate-root -cancel >/dev/null 2>&1 || true
+      [ "${submitted}" -lt "${threshold}" ] || BAO_ISSUANCE_UNCERTAIN=1
+      bao_generate_root -cancel </dev/null >/dev/null 2>&1 || true
       exit 1
     }
     encoded_token="$(printf '%s' "${result}" | jq -r '.encoded_token // .encoded_root_token // empty')"
@@ -945,34 +1046,92 @@ acquire_temp_root() {
 ${shares}
 EOF
 
+  if [ "${submitted}" -ge "${threshold}" ]; then
+    BAO_ISSUANCE_UNCERTAIN=1
+  fi
   if [ -z "${encoded_token}" ]; then
     echo "ERROR: no encoded root token returned after submitting shares" >&2
-    remote_kubectl exec -n openbao "${BAO_POD}" -- bao operator generate-root -cancel >/dev/null 2>&1 || true
+    bao_generate_root -cancel </dev/null >/dev/null 2>&1 || true
     exit 1
   fi
 
   # Decode the encoded token using the OTP to get the real one-shot root token.
   local decoded
-  decoded="$(printf '%s' "${encoded_token}" | remote_kubectl exec -i -n openbao "${BAO_POD}" -- bao operator generate-root -decode=- -otp="${otp}" -format=json)"
-  BAO_ROOT_TOKEN="$(printf '%s' "${decoded}" | jq -r '.token // .data.token // empty')"
+  decoded="$(printf '%s' "${encoded_token}" | bao_generate_root_otp "${otp}" -decode=- -format=json)" || decoded=""
+  BAO_ROOT_TOKEN="$(printf '%s' "${decoded}" | jq -r '.token // .data.token // empty' 2>/dev/null)" || BAO_ROOT_TOKEN=""
   if [ -z "${BAO_ROOT_TOKEN}" ]; then
-    echo "ERROR: failed to decode root token" >&2
+    echo "ERROR: failed to decode root token. The last share was accepted, so a root token may exist." >&2
     exit 1
   fi
+  BAO_ISSUANCE_UNCERTAIN=0
+  BAO_ROOT_ACCESSOR="$(printf '%s\n' "${BAO_ROOT_TOKEN}" | remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
+    IFS= read -r BAO_TOKEN
+    export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
+    bao token lookup -format=json
+  ' 2>/dev/null | jq -r '.data.accessor // empty' 2>/dev/null)" || BAO_ROOT_ACCESSOR=""
 }
 
+# bao_revoke_self TOKEN — `bao token revoke -self` with the token on stdin, tried
+# BAO_REVOKE_RETRIES times. Returns non-zero when every try failed.
+bao_revoke_self() {
+  local token="$1" try=1
+  while :; do
+    if printf '%s\n' "${token}" | \
+      remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
+        IFS= read -r BAO_TOKEN
+        export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
+        bao token revoke -self
+      ' >/dev/null 2>&1; then
+      return 0
+    fi
+    [ "${try}" -lt "${BAO_REVOKE_RETRIES}" ] || return 1
+    try=$((try + 1))
+    sleep "${BAO_REVOKE_RETRY_DELAY}"
+  done
+}
+
+# Revokes the temporary root token, then the ops-admin login token. It runs as the
+# EXIT trap, so it must not hide a failure: a revoke that fails every try, or a root
+# token that may exist without a decode, prints how to revoke it and ends the script
+# with a non-zero status, even when everything before it worked. A token that was
+# revoked is cleared, so a second call has nothing left to revoke.
 revoke_temp_root() {
-  [ -n "${BAO_ROOT_TOKEN:-}" ] || return 0
   [ -n "${BAO_POD:-}" ] || return 0
+  [ "${BAO_REVOKE_FAILED}" -eq 0 ] || exit 1
 
-  printf '%s\n' "${BAO_ROOT_TOKEN}" | \
-    remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
-      IFS= read -r BAO_TOKEN
-      export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
-      bao token revoke -self
-    ' >/dev/null 2>&1 || true
+  if [ -n "${BAO_ROOT_TOKEN:-}" ]; then
+    if bao_revoke_self "${BAO_ROOT_TOKEN}"; then
+      BAO_ROOT_TOKEN=""
+    else
+      echo "ERROR: could not revoke the temporary root token after ${BAO_REVOKE_RETRIES} tries. A live root token may remain." >&2
+      echo "  Accessor: ${BAO_ROOT_ACCESSOR:-unknown}. Revoke it now with: bao token revoke -accessor <accessor>" >&2
+      echo "  (with a new temporary root token if you have no other that may revoke it)." >&2
+      BAO_ROOT_TOKEN=""
+      BAO_REVOKE_FAILED=1
+    fi
+  fi
 
-  BAO_ROOT_TOKEN=""
+  if [ -n "${BAO_LOGIN_TOKEN:-}" ]; then
+    if bao_revoke_self "${BAO_LOGIN_TOKEN}"; then
+      BAO_LOGIN_TOKEN=""
+    else
+      echo "ERROR: could not revoke the ops-admin login token after ${BAO_REVOKE_RETRIES} tries. It stays valid until its TTL." >&2
+      echo "  Accessor: ${BAO_LOGIN_ACCESSOR:-unknown}. Revoke it with: bao token revoke -accessor <accessor>" >&2
+      BAO_LOGIN_TOKEN=""
+      BAO_REVOKE_FAILED=1
+    fi
+  fi
+
+  if [ "${BAO_ISSUANCE_UNCERTAIN}" -eq 1 ] && [ -z "${BAO_ROOT_TOKEN}" ]; then
+    echo "ERROR: the last unseal share was accepted but the root token was not decoded, so a root token may exist that nothing revoked." >&2
+    echo "  Recover as the openbao role README describes (Root token procedure): generate a new temporary root token," >&2
+    echo "  list the accessors with: bao list auth/token/accessors, look each one up, and revoke the orphan with:" >&2
+    echo "  bao token revoke -accessor <accessor>. Then revoke the new temporary token." >&2
+    BAO_ISSUANCE_UNCERTAIN=0
+    BAO_REVOKE_FAILED=1
+  fi
+
+  [ "${BAO_REVOKE_FAILED}" -eq 0 ] || exit 1
 }
 
 # bao_kv_get PATH — read a path with the temp root token; emits JSON or
@@ -1008,11 +1167,7 @@ cmd_seed_bao() {
   resolve_remote_kubectl "${env_name}"
 
   # Find OpenBao pod
-  BAO_POD="$(remote_kubectl get pods -n openbao -l app.kubernetes.io/name=openbao -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)" || {
-    echo "ERROR: no OpenBao pod found in namespace 'openbao'" >&2
-    echo "  Is OpenBao installed? Run the pre-seed provision first." >&2
-    exit 1
-  }
+  find_active_bao_pod
 
   echo "Using OpenBao pod: ${BAO_POD}" >&2
 
@@ -1656,10 +1811,7 @@ cmd_seed_awx_ssh() {
   ssh_key_data="$(cat "${DMF_AWX_CONTROL_NODE_SSH_PATH}")"
 
   # Find OpenBao pod
-  BAO_POD="$(remote_kubectl get pods -n openbao -l app.kubernetes.io/name=openbao -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)" || {
-    echo "ERROR: no OpenBao pod found in namespace 'openbao'" >&2
-    exit 1
-  }
+  find_active_bao_pod
 
   # Check OpenBao is unsealed
   local seal_status
