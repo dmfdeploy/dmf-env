@@ -75,6 +75,8 @@ jobs:
         env:
           SOPS_VERSION: "3.13.1"
           SOPS_SHA256: "620a9d7e3352ababeca6908cea24a6e8b14ce89a448ddbd3f94f1ef3398f470a"
+          YQ_VERSION: "4.54.1"
+          YQ_SHA256: "8e34fc298390875de416e6a4afcb8cabeceb25d9aa8506c1a2f9353cf702ea5f"
         run: |
           set -eu
           # age is in apt; sops is NOT in ubuntu-24.04 default repos → pinned release.
@@ -83,6 +85,12 @@ jobs:
           echo "${SOPS_SHA256}  /tmp/sops" | sha256sum -c -
           sudo install -m 0755 /tmp/sops /usr/local/bin/sops
           sops --version
+          # The tests call `yq -o=json`, which only the Go yq v4 accepts. Pin it
+          # instead of relying on whatever the runner image ships.
+          curl -fsSLo /tmp/yq "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64"
+          echo "${YQ_SHA256}  /tmp/yq" | sha256sum -c -
+          sudo install -m 0755 /tmp/yq /usr/local/bin/yq
+          yq --version
       - name: wizard-noninteractive-parity
         run: |
           bash tests/wizard-noninteractive-parity.sh
@@ -101,6 +109,9 @@ jobs:
       - name: fail2ban-ignoreip
         run: |
           bash tests/fail2ban-ignoreip.sh
+      - name: unseal-openbao-ssh-key
+        run: |
+          bash tests/unseal-openbao-ssh-key.sh
       - name: unseal-openbao-tls
         run: |
           bash tests/unseal-openbao-tls.sh
