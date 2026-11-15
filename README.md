@@ -47,6 +47,7 @@ terraform/
 tasks/hetzner/               provider-specific task includes
 templates/                   Jinja2 templates
 tests/                       offline unit tests for the wrappers
+scripts/check.sh             runs the checks that CI runs (see CONTRIBUTING.md)
 ```
 
 ## The operator-local env layout
@@ -79,11 +80,11 @@ Install these tools before you run the wizard, the wrappers or the tests:
 | [`yq`](https://github.com/mikefarah/yq) v4 (the Go version) | Reading the manifest in the non-interactive wizard, and in `tests/wizard-noninteractive-parity.sh`. |
 | `jq` | The `bin/` scripts and the tests that parse JSON. |
 
-Install the Go `yq` from [mikefarah/yq](https://github.com/mikefarah/yq), for
-example with `brew install yq`. Don't use the Python `yq` wrapper that
-`pip install yq` or some Linux distributions provide. It has the same name, but
-it doesn't accept `-o=json`, which the tests call. It fails with
-`jq: Unknown option -o=json`. To check which one you have, run `yq --version`.
+Install the Go `yq` from [mikefarah/yq](https://github.com/mikefarah/yq). Don't
+use the Python `yq` wrapper that some package managers and Linux distributions
+provide. It has the same name, but it doesn't accept `-o=json`, which the tests
+call. It fails with `jq: Unknown option -o=json`. To check which one you have,
+run `yq --version`.
 The Go version prints `yq (https://github.com/mikefarah/yq/) version v4.x.x`.
 
 ## Quick start
@@ -179,7 +180,7 @@ The wrapper writes a temp JSON of `vault_*` keys injected with `-e @file`.
 
 ## For contributors
 
-`AGENTS.md`, `CLAUDE.md` and `QWEN.md` hold instructions for AI coding agents that help maintain this repository. Human contributors can skip them and start with [CONTRIBUTING.md](CONTRIBUTING.md).
+[CONTRIBUTING.md](CONTRIBUTING.md) covers setup, the test command, the git hooks, and what a pull request needs. `AGENTS.md`, `CLAUDE.md` and `QWEN.md` hold instructions for AI coding agents that help maintain this repository.
 
 ## License
 
