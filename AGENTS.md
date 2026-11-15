@@ -17,9 +17,10 @@ Cross-repo status, decisions and plans live in the
 
 ## Build and test
 
-- Shell lint: `shellcheck -S error bin/*.sh`
-- OpenTofu: `tofu fmt -check -recursive terraform/hetzner terraform/modules/hetzner/cluster`, then `tofu init -backend=false && tofu validate` in each of those two directories.
-- Tests: `bash tests/<name>.sh` for each script in `tests/`. They are hermetic and skip when `sops`, `age` or `jq` is missing.
+Setup, the check command, which checks need a live environment or run in CI
+only, the hooks, and the pull request gates are in
+[CONTRIBUTING.md](CONTRIBUTING.md#develop-and-test). That section is the one
+copy of the commands.
 
 ## Rules that are easy to miss
 

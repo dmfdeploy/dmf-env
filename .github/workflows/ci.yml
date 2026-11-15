@@ -19,17 +19,8 @@ jobs:
           persist-credentials: false
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
-      - name: shellcheck bin/
-        run: |
-          set -eu
-          shopt -s nullglob
-          scripts=(bin/*.sh)
-          if [ ${#scripts[@]} -eq 0 ]; then
-            echo "SKIP: no scripts found in bin/"
-            exit 0
-          fi
-          # -S error: gate on real errors only (the tree has pre-existing info/warning/style nits)
-          shellcheck -S error "${scripts[@]}"
+      - name: shellcheck
+        run: scripts/check.sh shellcheck
 
   tofu-validate:
     runs-on: ubuntu-24.04
@@ -49,20 +40,8 @@ jobs:
           unzip -o /tmp/tofu.zip -d /tmp
           sudo mv /tmp/tofu /usr/local/bin/tofu
           tofu --version
-      - name: tofu fmt check
-        run: |
-          tofu fmt -check -recursive terraform/hetzner
-          tofu fmt -check -recursive terraform/modules/hetzner/cluster
-      - name: tofu validate — terraform/hetzner
-        working-directory: terraform/hetzner
-        run: |
-          tofu init -backend=false
-          tofu validate
-      - name: tofu validate — terraform/modules/hetzner/cluster
-        working-directory: terraform/modules/hetzner/cluster
-        run: |
-          tofu init -backend=false
-          tofu validate
+      - name: tofu fmt and validate
+        run: scripts/check.sh tofu
 
   tests:
     runs-on: ubuntu-24.04
@@ -91,36 +70,8 @@ jobs:
           echo "${YQ_SHA256}  /tmp/yq" | sha256sum -c -
           sudo install -m 0755 /tmp/yq /usr/local/bin/yq
           yq --version
-      - name: wizard-noninteractive-parity
-        run: |
-          bash tests/wizard-noninteractive-parity.sh
-      - name: bundle-set-roundtrip
-        run: |
-          bash tests/bundle-set-roundtrip.sh
-      - name: remove-env-sandbox-noop
-        run: |
-          bash tests/remove-env-sandbox-noop.sh
-      - name: remove-env-data-root
-        run: |
-          bash tests/remove-env-data-root.sh
-      - name: enroll-ssh-key
-        run: |
-          bash tests/enroll-ssh-key.sh
-      - name: fail2ban-ignoreip
-        run: |
-          bash tests/fail2ban-ignoreip.sh
-      - name: unseal-openbao-ssh-key
-        run: |
-          bash tests/unseal-openbao-ssh-key.sh
-      - name: unseal-openbao-tls
-        run: |
-          bash tests/unseal-openbao-tls.sh
-      - name: upgrade-in-place-guard
-        run: |
-          bash tests/upgrade-in-place-guard.sh
-      - name: acquire-temp-root
-        run: |
-          bash tests/acquire-temp-root.sh
+      - name: Run the tests
+        run: scripts/check.sh tests
 
   review-comments:
     # Comments state why, not which review prompted them
@@ -131,10 +82,8 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           persist-credentials: false
-      - name: No review history in comments
-        run: bin/check-review-comments.sh
-      - name: Allowlist parser self-test
-        run: bin/check-review-comments.sh --self-test
+      - name: No review history in comments, and the allowlist parser self-test
+        run: scripts/check.sh review-comments
 
   working-model:
     # Working-model block sync (umbrella issue dmfdeploy/dmfdeploy#32): the
