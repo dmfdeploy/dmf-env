@@ -384,6 +384,16 @@ init_env_paths() {
     rm -f "${BUNDLE_FILE}.wizard-tmp"
 }
 
+# is_ipv4 <value> — four dot-separated decimal parts, each 0-255.
+is_ipv4() {
+    local part
+    [[ "$1" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]] || return 1
+    local IFS=.
+    for part in $1; do
+        [ "$((10#${part}))" -le 255 ] || return 1
+    done
+}
+
 # derive_sandbox_base_domain — compute BASE_DOMAIN for sandbox.
 # Inputs (must be set before calling):
 #   SANDBOX_NODE_IP       — browser-reachable IP (public for NAT'd nodes)
@@ -412,7 +422,7 @@ derive_sandbox_base_domain() {
 
     # Default: sslip.io — requires a valid IPv4 to derive a working domain.
     local ip="${SANDBOX_NODE_IP:-}"
-    if [[ "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+    if is_ipv4 "$ip"; then
         local dashed
         dashed="$(printf '%s' "$ip" | tr '.' '-')"
         BASE_DOMAIN="${dashed}.sslip.io"
