@@ -56,6 +56,16 @@ schema_version: 1
     no `/etc/hosts` edits needed
   - `hosts`: `base_domain` = `<label>.dmf.test` — air-gapped opt-out, requires
     explicit `/etc/hosts` mapping; `sandbox.label` becomes required in this mode
+- `sandbox.network_mode`:
+  - Optional when `provider: sandbox`
+  - One of `lan` (default) or `public`
+  - `lan`: for a LAN or air-gapped install. The approval page is
+    `dmf-<install-id>.local`; the console and other apps keep the base domain
+  - `public`: for a fixed public IP. The approval page is `unlock.<base_domain>`
+    (`unlock.<ip-dashed>.sslip.io`); `public` can't be combined with
+    `sandbox.addressing: hosts`
+  - The wizard renders `dmf_network_mode` and `dmf_approval_page_name` into the
+    env's group_vars
 - `sandbox.base_domain`:
   - Optional when `provider: sandbox`
   - Explicit override for the base domain (bypasses both sslip.io derivation and
@@ -123,6 +133,7 @@ sandbox:
   iface: lima0
   ssh_private_key_path: /tmp/fake-sandbox-key
   # addressing: sslip.io       # default; set to "hosts" for air-gapped .dmf.test
+  # network_mode: lan         # default; set to "public" for a fixed public IP
   # base_domain: custom.io     # explicit override
 ```
 
