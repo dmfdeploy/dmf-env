@@ -54,6 +54,8 @@ tags = ["topology", "dmf"]
 # dmf-internal-topology rule covers real operator IPs and fires nowhere here). Narrow
 # value+path: hetzner private-net default 10.0.0.0/24|/28, k3s pod/service 10.42.0.0/15-16
 # + 10.43.0.0/16, and Hetzner auto-assign example 10.0.0.2-4 in the TF module comment.
+# The wizard's golden render fixture copies init-wizard.sh's output verbatim, so it
+# carries the same k3s defaults.
 [[rules.allowlists]]
 description = "standard framework CIDR defaults (value+path scoped)"
 condition = "AND"
@@ -65,6 +67,7 @@ regexes = [
 ]
 paths = [
     '''^bin/init-wizard\.sh$''',
+    '''^tests/fixtures/sandbox-main\.yml\.golden$''',
     '''^terraform/modules/hetzner/cluster/.*''',
 ]
 

@@ -425,6 +425,35 @@ derive_sandbox_base_domain() {
     BASE_DOMAIN="${SANDBOX_LABEL}.dmf.test"
 }
 
+# derive_approval_page_name — choose the host name of the unlock approval page.
+# Inputs (must be set before calling):
+#   SANDBOX_NETWORK_MODE  — "lan" (default when empty) or "public"
+#   SANDBOX_ADDRESSING    — "sslip.io" (default) or "hosts"
+#   ENV_ID                — the install id
+#   BASE_DOMAIN           — set by derive_sandbox_base_domain
+# Side effects: sets SANDBOX_NETWORK_MODE and APPROVAL_PAGE_NAME.
+# In lan mode only the approval page moves to .local; the other apps keep
+# BASE_DOMAIN.
+derive_approval_page_name() {
+    SANDBOX_NETWORK_MODE="$(lowercase "$(trim_spaces "${SANDBOX_NETWORK_MODE:-lan}")")"
+    case "${SANDBOX_NETWORK_MODE}" in
+        lan)
+            local label
+            label="$(lowercase "dmf-${ENV_ID}")"
+            validate_dns_label "$label"
+            APPROVAL_PAGE_NAME="${label}.local"
+            ;;
+        public)
+            [ "${SANDBOX_ADDRESSING:-sslip.io}" != "hosts" ] ||
+                die "sandbox.network_mode public needs sslip.io addressing; hosts addressing has no public name"
+            APPROVAL_PAGE_NAME="unlock.${BASE_DOMAIN}"
+            ;;
+        *)
+            die "invalid sandbox.network_mode: ${SANDBOX_NETWORK_MODE} (use lan or public)"
+            ;;
+    esac
+}
+
 validate_inputs() {
     case "${PROVIDER}" in
         sandbox|hetzner) ;;
@@ -437,6 +466,7 @@ validate_inputs() {
         ARCH="arm64"
         POSTURE="sandbox"
         derive_sandbox_base_domain
+        derive_approval_page_name
         ENV_LABEL="${SANDBOX_LABEL}"
         [ -n "${SANDBOX_LABEL}" ] && validate_dns_label "${SANDBOX_LABEL}"
         [ -n "${SANDBOX_NODE_IP}" ] || die "sandbox.node_ip is required"
@@ -654,6 +684,7 @@ collect_inputs_interactive() {
         SSH_PRIVKEY_PATH="$(prompt_required "SSH private key path for the node" "Workstation private key that authenticates as the SSH user. Referenced by path (ansible_ssh_private_key_file); not embedded.")"
         [ -r "${SSH_PRIVKEY_PATH}" ] || warn "SSH private key not readable at ${SSH_PRIVKEY_PATH} — it must exist before run-playbook.sh."
         SANDBOX_IFACE="$(prompt_default "Node primary network interface" "eth0" "NIC carrying the routable IP; pins k3s/flannel. Lima=lima0, Hetzner=enp7s0, many VPS=eth0/enp1s0.")"
+        SANDBOX_NETWORK_MODE="$(prompt_default "Network mode (lan or public)" "lan" "lan: LAN or air-gapped; the approval page is dmf-<install-id>.local. public: fixed public IP; the approval page is unlock.<ip>.sslip.io.")"
         SSH_PUBKEY_PATH=""
         SSH_PRIVKEY_CONTENTS=""
         USE_GENERATED_KEY="yes"
@@ -774,6 +805,7 @@ load_inputs_noninteractive() {
     ANSIBLE_USER="$(yaml_get "$answers_file" '.sandbox.ansible_user')"
     SANDBOX_IFACE="$(yaml_get "$answers_file" '.sandbox.iface')"
     SANDBOX_ADDRESSING="$(yaml_get "$answers_file" '.sandbox.addressing')"
+    SANDBOX_NETWORK_MODE="$(yaml_get "$answers_file" '.sandbox.network_mode')"
     SANDBOX_BASE_DOMAIN="$(yaml_get "$answers_file" '.sandbox.base_domain')"
     SSH_PRIVKEY_PATH="$(yaml_get "$answers_file" '.sandbox.ssh_private_key_path')"
     [ -z "$SSH_PRIVKEY_PATH" ] && SSH_PRIVKEY_PATH="$(yaml_get "$answers_file" '.ssh.private_key_path')"
@@ -1837,6 +1869,8 @@ dmf_awx_profile: single-node-low-concurrency
 # default(false) and the catalog Deploy buttons can't wake a slept AWX.
 dmf_awx_autoscale_enabled: true
 dmf_sandbox_base_domain: ${BASE_DOMAIN}
+dmf_network_mode: ${SANDBOX_NETWORK_MODE}
+dmf_approval_page_name: ${APPROVAL_PAGE_NAME}
 
 # Sandbox-fit monitoring sizing (60 GiB / 4 CPU / 10 GiB Lima VM).
 # Role defaults are cloud-shaped (Prom 50Gi/30d/40GB, Loki 50Gi/30d) and

@@ -52,7 +52,7 @@ ssh-keygen -t ed25519 -N "" -f "${NODE_KEY}" -C "wizard-parity-sandbox" >/dev/nu
 interactive_log="${WORK_DIR}/interactive.log"
 noninteractive_log="${WORK_DIR}/noninteractive.log"
 
-interactive_answers=$'2\nmarty-mcfly\nmarty@dmf.test\nMarty McFly\nsandbox-demo\n203.0.113.10\nlima\n'"${NODE_KEY}"$'\nlima0\ny\n'
+interactive_answers=$'2\nmarty-mcfly\nmarty@dmf.test\nMarty McFly\nsandbox-demo\n203.0.113.10\nlima\n'"${NODE_KEY}"$'\nlima0\n\ny\n'
 if ! printf '%s' "${interactive_answers}" | bash "${WIZARD}" >"${interactive_log}" 2>&1; then
   cat "${interactive_log}" >&2
   fail "interactive wizard run failed"

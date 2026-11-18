@@ -1,0 +1,159 @@
+---
+# <ENV_ID> sandbox — single-node Debian 12 reference deploy.
+#
+# reference profile.
+#
+# This inventory carries the sandbox-single-node capability variables directly
+# (rather than relying on the bootstrap-sandbox-profile.yml prelude) so that
+# individual atomic playbooks run against it behave correctly even when invoked
+# outside the sandbox wrappers — e.g. the Layer 2/3 first-acceptance path.
+
+# --- Env schema (consumed by dmf-born-inventory → NetBox; cosmetic for the
+#     secret-free first-acceptance path) ---
+dmf_env_id: "<ENV_ID>"
+dmf_env_label: "sandbox-demo"
+dmf_provider: "sandbox"          # generic SSH host; not a cloud provider
+dmf_architecture: "arm64"
+
+# --- Connection (VPS-style: plain SSH to the routable IP) ---
+# UserKnownHostsFile=/dev/null because a disposable sandbox's host key may churn
+# on rebuild; StrictHostKeyChecking=no avoids the prompt for this throwaway env.
+ansible_user: lima
+# The node OS admin/login user (= ansible_user). 210-harden connects as this
+# (no root SSH on the sandbox) and keeps it in sshd AllowUsers + sudoers.
+harden_admin_user: lima
+# Allow SSH from anywhere on the hardened nftables public chain (key-only auth +
+# fail2ban + sshd AllowUsers still apply). Without this the harden role drops
+# port 22 and locks out the sandbox's LAN SSH. Tighten to your LAN/mgmt CIDR for
+# a stricter posture.
+harden_ssh_allow_ipv4: ['0.0.0.0/0']
+# Hardened nftables must accept the k3s pod+service CIDRs (k3s defaults
+# 10.42.0.0/16 + 10.43.0.0/16, covered by 10.42.0.0/15) so pods can reach the
+# node API (6443)/kubelet — else CoreDNS + cluster networking break. The role
+# default (10.0.0.0/28, a cloud node net) doesn't cover them on a single node.
+harden_private_cidr: "10.42.0.0/15"
+ansible_ssh_private_key_file: "/fixed/key"
+ansible_ssh_common_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+ansible_python_interpreter: /usr/bin/python3
+# AWX→control-node key (ADR-0016 Path A) — generated per-env; privkey lives in
+# the sops bundle and is materialized to this 0600 path at run time by
+# run-playbook.sh. No hardcoded/operator-specific path.
+awx_control_node_ssh_privkey_path: <DATA_ROOT>/envs/<ENV_ID>/ssh/awx-control-node.key
+
+# --- Cluster basics ---
+k3s_control_node: <ENV_ID>-01
+# Mapped from OpenBao: seed-bao writes the bundle's cluster.k3s_token, then
+# run-playbook.sh export-vars emits vault_k3s_token, which 300-k3s consumes
+# here as k3s_token.
+k3s_token: "{{ vault_k3s_token }}"
+
+# K3s networking. The routable interface is this host's primary NIC and the
+# default route, so it is the cluster's single routable identity. (On Hetzner
+# this field is enp7s0; on bare metal it is whatever the box names its NIC.)
+k3s_private_interface: lima0
+k3s_flannel_iface: "{{ k3s_private_interface }}"
+k3s_advertise_address: "{{ k3s_node_ip }}"
+k3s_node_external_ip: "{{ k3s_node_ip }}"
+k3s_server_disable_cloud_controller: false
+
+# --- sandbox-single-node release profile capabilities ---
+dmf_release_profile: sandbox-single-node
+dmf_storage_backend: local-path
+dmf_storage_class: local-path
+# local-path is RWO-only: the NetBox media PVC must be ReadWriteOnce on the single
+# node. The sandbox profile prelude (bootstrap-sandbox-profile.yml) also sets this,
+# but rendering it into the inventory keeps a STANDALONE 610-netbox run correct too
+# (the role default is ReadWriteMany → Helm immutable-PVC patch failure).
+netbox_media_access_mode: ReadWriteOnce
+dmf_ingress_mode: single-node-servicelb
+dmf_tls_mode: local-ca
+dmf_object_storage_enabled: false
+dmf_headscale_enabled: false
+dmf_tailscale_enabled: false
+dmf_monitoring_profile: minimal
+dmf_awx_profile: single-node-low-concurrency
+# AWX on-demand scale-to-zero + console autowake (#97). The sandbox profile
+# prelude defaults this true, but rendering it into the inventory keeps a
+# STANDALONE 650-dmf-cms run correct too — otherwise the cms role falls back to
+# default(false) and the catalog Deploy buttons can't wake a slept AWX.
+dmf_awx_autoscale_enabled: true
+dmf_sandbox_base_domain: 203-0-113-10.sslip.io
+
+# Sandbox-fit monitoring sizing (60 GiB / 4 CPU / 10 GiB Lima VM).
+# Role defaults are cloud-shaped (Prom 50Gi/30d/40GB, Loki 50Gi/30d) and
+# wedge a single-node disk. Sized to a reference single-node cluster + a
+# generous 7d operator retention; total monitoring PVCs ≈ 11 GiB (Prom 5 +
+# Loki 5 + Grafana 1). Audit headroom with df -h on the node before raising.
+# Rendered into the inventory (not just the bootstrap-sandbox-profile prelude)
+# so a STANDALONE re-run of a single monitoring play stays sandbox-fit too
+# (same hygiene as netbox_media_access_mode above).
+prometheus_storage_size: 5Gi
+prometheus_retention: 7d
+prometheus_retention_size: 4GB
+loki_storage_size: 5Gi
+loki_retention: 168h          # 7 days
+loki_security_retention: 168h  # 7 days (no separate security stream on sandbox)
+# Grafana PVC stays at the role default 1Gi (already sandbox-fit).
+# Alertmanager off on sandbox — the role asserts ntfy + watchdog receiver
+# URLs when enabled, and an experiment-phase sandbox has neither. Set
+# vault_alertmanager_ntfy_url + vault_alertmanager_watchdog_url in OpenBao
+# and flip this back to true to turn alerting on.
+prometheus_alertmanager_enabled: false
+
+# Ingress: keep k3s ServiceLB (klipper) and let it bind 80/443 on the single
+# node. No MetalLB on a one-node sandbox.
+cluster_ingress_mode: single-node-servicelb
+cluster_ingress_provider_tasks: ""
+cluster_ingress_external_traffic_policy: Cluster
+
+# Storage / readiness: local-path only; no Longhorn to wait on.
+cluster_ready_wait_for_longhorn: false
+cluster_ready_wait_for_storageclass: false
+
+# TLS / external entry. The stable external entry point is the HTTPS base domain
+# (served by the collapsed single Traefik with the local-CA default cert), NOT
+# the raw node IP — apps derive their scheme from external_base_url, so this must
+# be https in local-ca mode. The node's routable IP lives in hosts.ini
+# (k3s_node_ip) for ServiceLB / CoreDNS / the /etc/hosts mapping.
+external_base_url: "https://{{ dmf_sandbox_base_domain }}"
+cert_manager_cluster_domain: "{{ dmf_sandbox_base_domain }}"
+
+# Collapsed ingress (single-node, no traefik-private / Tailscale): every
+# host-based app routes through the bundled k3s Traefik (IngressClass 'traefik').
+forgejo_ingress_class_name: traefik
+netbox_ingress_class: traefik
+awx_ingress_class: traefik
+cms_ingress_class: traefik
+grafana_ingress_class: traefik
+
+# Per-app hostnames (consumed by the app + configure/OIDC playbooks). Local-only
+# under the sandbox base domain — reach them via the node IP + a hosts mapping.
+authentik_host: auth.203-0-113-10.sslip.io
+forgejo_host: forgejo.203-0-113-10.sslip.io
+grafana_host: grafana.203-0-113-10.sslip.io
+dmf_cms_host: console.203-0-113-10.sslip.io
+netbox_host: netbox.203-0-113-10.sslip.io
+awx_host: awx.203-0-113-10.sslip.io
+registry_host: registry.203-0-113-10.sslip.io
+
+# --- Identity (operator passkey for Authentik bootstrap) ---
+# Collected in the operator prompts (same as the cloud path). Without these the
+# bootstrap blueprint falls back to the placeholder "operator" user, so the
+# enrollment flow's identification stage rejects the operator's real username.
+authentik_bootstrap_passkey_username: marty-mcfly
+authentik_bootstrap_passkey_email: marty@dmf.test
+authentik_bootstrap_passkey_name: Marty McFly
+
+# --- OpenBao: sandbox Tier-3 self-recovering unseal (ADR-0031 O4 / Profile 1) ---
+# No operator-Mac / JuiceFS / Keychain / USB break-glass distribution. A single
+# Shamir share with the fresh-init automation file as the only key custody,
+# written locally under ~/.dmfdeploy/envs/<env>/ (created if absent by the
+# role's localhost file task). Reset == re-init; this is a disposable sandbox,
+# not production.
+openbao_breakglass_distribution_enabled: false
+openbao_shamir_shares: 1
+openbao_shamir_threshold: 1
+openbao_key_path: "<DATA_ROOT>/envs/<ENV_ID>/openbao-keys"
+# ESO loads the OpenBao AppRole creds from the fresh-init automation/break-glass
+# JSON the openbao role writes at <openbao_key_path>.json (vertical-orchestration/100-eso.yml).
+eso_openbao_breakglass_file: "<DATA_ROOT>/envs/<ENV_ID>/openbao-keys.json"
