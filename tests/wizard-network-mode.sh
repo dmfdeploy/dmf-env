@@ -132,6 +132,20 @@ NODE_IP=node.internal run_wizard public-fallback "network_mode: public"
 grep -q "needs a node_ip that is an IPv4 address, or an explicit sandbox.base_domain" "${RUN_LOG}" \
   || fail "public with non-IPv4 node_ip: message missing"
 
+# ── Public with out-of-range octets is rejected ──
+# Catches: a dotted-quad check that only matches digit counts, not the 0-255 range.
+NODE_IP=999.999.999.999 run_wizard public-bad-octets "network_mode: public"
+[ "${RUN_STATUS}" -ne 0 ] || fail "public with node_ip 999.999.999.999 was accepted"
+grep -q "needs a node_ip that is an IPv4 address, or an explicit sandbox.base_domain" "${RUN_LOG}" \
+  || fail "public with out-of-range node_ip: message missing"
+
+# ── Public with an edge-of-range node_ip is accepted ──
+# Catches: a range check that is off by one (rejects 255) or rejects a valid top octet like 254.
+NODE_IP=255.255.255.254 run_wizard public-edge-ip "network_mode: public"
+[ "${RUN_STATUS}" -eq 0 ] || { cat "${RUN_LOG}" >&2; fail "public with node_ip 255.255.255.254 failed"; }
+[ "$(var_of "${RUN_MAIN}" dmf_approval_page_name)" = "unlock.255-255-255-254.sslip.io" ] \
+  || fail "public with edge node_ip: wrong approval page"
+
 # ── Public with a non-IPv4 node_ip and an explicit base domain works ──
 # Catches: a check that rejects every non-IPv4 node_ip, or ignores sandbox.base_domain.
 NODE_IP=node.internal run_wizard public-explicit "network_mode: public" "base_domain: demo.example.org"
