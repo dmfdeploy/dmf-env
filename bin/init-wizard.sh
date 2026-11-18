@@ -390,11 +390,13 @@ init_env_paths() {
 #   SANDBOX_LABEL         — DNS-safe label
 #   SANDBOX_BASE_DOMAIN   — explicit override (optional; may be empty)
 #   SANDBOX_ADDRESSING    — "sslip.io" (default) or "hosts"
-# Side effects: sets BASE_DOMAIN and SANDBOX_LABEL (ensures label is set).
+# Side effects: sets BASE_DOMAIN and SANDBOX_LABEL (ensures label is set), and
+# BASE_DOMAIN_SOURCE: "explicit", "hosts", "sslip" or "fallback".
 derive_sandbox_base_domain() {
     # Explicit override wins — operator provided sandbox.base_domain.
     if [ -n "${SANDBOX_BASE_DOMAIN:-}" ]; then
         BASE_DOMAIN="${SANDBOX_BASE_DOMAIN}"
+        BASE_DOMAIN_SOURCE="explicit"
         if [ -z "${SANDBOX_LABEL}" ]; then
             SANDBOX_LABEL="$(printf '%s' "${BASE_DOMAIN}" | cut -d. -f1)"
         fi
@@ -404,6 +406,7 @@ derive_sandbox_base_domain() {
     # Air-gapped opt-out: hosts-based addressing → .dmf.test.
     if [ "${SANDBOX_ADDRESSING:-sslip.io}" = "hosts" ]; then
         BASE_DOMAIN="${SANDBOX_LABEL}.dmf.test"
+        BASE_DOMAIN_SOURCE="hosts"
         return 0
     fi
 
@@ -413,6 +416,7 @@ derive_sandbox_base_domain() {
         local dashed
         dashed="$(printf '%s' "$ip" | tr '.' '-')"
         BASE_DOMAIN="${dashed}.sslip.io"
+        BASE_DOMAIN_SOURCE="sslip"
         # If no label was given, derive one from the dashed IP for consistency.
         if [ -z "${SANDBOX_LABEL}" ]; then
             SANDBOX_LABEL="${dashed}"
@@ -423,6 +427,7 @@ derive_sandbox_base_domain() {
     # Non-IPv4 (or empty): fall back to .dmf.test with a warning.
     warn "SANDBOX_NODE_IP '${ip}' is not a valid IPv4 — falling back to .dmf.test (air-gapped opt-out). Set sandbox.addressing: hosts or supply sandbox.base_domain explicitly."
     BASE_DOMAIN="${SANDBOX_LABEL}.dmf.test"
+    BASE_DOMAIN_SOURCE="fallback"
 }
 
 # derive_approval_page_name — choose the host name of the unlock approval page.
@@ -431,6 +436,7 @@ derive_sandbox_base_domain() {
 #   SANDBOX_ADDRESSING    — "sslip.io" (default) or "hosts"
 #   ENV_ID                — the install id
 #   BASE_DOMAIN           — set by derive_sandbox_base_domain
+#   BASE_DOMAIN_SOURCE    — set by derive_sandbox_base_domain
 # Side effects: sets SANDBOX_NETWORK_MODE and APPROVAL_PAGE_NAME.
 # In lan mode only the approval page moves to .local; the other apps keep
 # BASE_DOMAIN.
@@ -446,6 +452,10 @@ derive_approval_page_name() {
         public)
             [ "${SANDBOX_ADDRESSING:-sslip.io}" != "hosts" ] ||
                 die "sandbox.network_mode public needs sslip.io addressing; hosts addressing has no public name"
+            case "${BASE_DOMAIN_SOURCE:-}" in
+                sslip|explicit) ;;
+                *) die "sandbox.network_mode public needs a node_ip that is an IPv4 address, or an explicit sandbox.base_domain" ;;
+            esac
             APPROVAL_PAGE_NAME="unlock.${BASE_DOMAIN}"
             ;;
         *)

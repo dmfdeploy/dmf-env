@@ -8,6 +8,7 @@
 #   - no sandbox.network_mode key: lan, dmf-<env_id>.local
 #   - public with sslip.io addressing: unlock.<dashed-ip>.sslip.io
 #   - public with hosts addressing: rejected
+#   - public with a non-IPv4 node_ip: rejected; with an explicit base_domain: accepted
 #   - an unknown mode: rejected
 #   - a key-less answers file renders the golden file plus the two new lines
 
@@ -54,7 +55,7 @@ operator:
   display: "Marty McFly"
 sandbox:
   label: sandbox-demo
-  node_ip: 203.0.113.10
+  node_ip: ${NODE_IP:-203.0.113.10}
   ansible_user: lima
   iface: lima0
   ssh_private_key_path: /fixed/key
@@ -123,6 +124,20 @@ run_wizard public "network_mode: public"
 run_wizard public-hosts "network_mode: public" "addressing: hosts"
 [ "${RUN_STATUS}" -ne 0 ] || fail "public with hosts addressing was accepted"
 grep -q "public needs sslip.io addressing" "${RUN_LOG}" || fail "public with hosts: message missing"
+
+# ── Public with a non-IPv4 node_ip is rejected ──
+# Catches: public accepting the .dmf.test fallback, which no public DNS resolves.
+NODE_IP=node.internal run_wizard public-fallback "network_mode: public"
+[ "${RUN_STATUS}" -ne 0 ] || fail "public with a non-IPv4 node_ip was accepted"
+grep -q "needs a node_ip that is an IPv4 address, or an explicit sandbox.base_domain" "${RUN_LOG}" \
+  || fail "public with non-IPv4 node_ip: message missing"
+
+# ── Public with a non-IPv4 node_ip and an explicit base domain works ──
+# Catches: a check that rejects every non-IPv4 node_ip, or ignores sandbox.base_domain.
+NODE_IP=node.internal run_wizard public-explicit "network_mode: public" "base_domain: demo.example.org"
+[ "${RUN_STATUS}" -eq 0 ] || { cat "${RUN_LOG}" >&2; fail "public with explicit base_domain failed"; }
+[ "$(var_of "${RUN_MAIN}" dmf_approval_page_name)" = "unlock.demo.example.org" ] \
+  || fail "public with explicit base_domain: wrong approval page"
 
 # ── Lan with hosts addressing still works ──
 # Catches: a check that rejects hosts addressing in every mode.
