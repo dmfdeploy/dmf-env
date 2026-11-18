@@ -28,10 +28,10 @@ harden_admin_user: lima
 # a stricter posture.
 harden_ssh_allow_ipv4: ['0.0.0.0/0']
 # Hardened nftables must accept the k3s pod+service CIDRs (k3s defaults
-# 10.42.0.0/16 + 10.43.0.0/16, covered by 10.42.0.0/15) so pods can reach the
+# <PRIVATE-ADDR>/16 + <PRIVATE-ADDR>/16, covered by <PRIVATE-ADDR>/15) so pods can reach the
 # node API (6443)/kubelet — else CoreDNS + cluster networking break. The role
-# default (10.0.0.0/28, a cloud node net) doesn't cover them on a single node.
-harden_private_cidr: "10.42.0.0/15"
+# default (<PRIVATE-ADDR>/28, a cloud node net) doesn't cover them on a single node.
+harden_private_cidr: "<PRIVATE-ADDR>/15"
 ansible_ssh_private_key_file: "/fixed/key"
 ansible_ssh_common_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
 ansible_python_interpreter: /usr/bin/python3
