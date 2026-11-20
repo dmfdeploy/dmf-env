@@ -7,6 +7,8 @@
 #   export-vars <env> <json-out>  — decrypt bundle to Ansible vars JSON
 #   seed-bao <env>                — seed platform + admin paths into OpenBao
 #   seed-awx-control-node-ssh <env> — seed AWX SSH privkey into OpenBao
+#   seed-install <env>            — the seed step of the install: both seeds, with the
+#                                   installer's token read from stdin
 #   status <env>                  — report bundle/seed metadata only
 #   rotate <env> <field>          — regenerate a specific field (optional)
 #   set-base-domain <env> <domain> — set metadata.base_domain for migration
@@ -1150,6 +1152,20 @@ bao_kv_get() {
   } 2>/dev/null
 }
 
+# take_write_token ENV — set BAO_ROOT_TOKEN for the writes of a seed. When seed-install
+# has read the installer's token (BAO_INSTALL_TOKEN), the seed writes with it and
+# revokes nothing: the installer owns that token. Otherwise the seed makes a temporary
+# root token through the Shamir share quorum and revokes it on exit.
+take_write_token() {
+  if [ -n "${BAO_INSTALL_TOKEN:-}" ]; then
+    BAO_ROOT_TOKEN="${BAO_INSTALL_TOKEN}"
+    return 0
+  fi
+  echo "Acquiring temporary root token via Shamir share quorum..." >&2
+  acquire_temp_root "$1"
+  trap 'revoke_temp_root' EXIT INT TERM
+}
+
 cmd_seed_bao() {
   # TODO(adr-0011-trigger): bao kv put inside the OpenBao pod exposes
   # secret values via argv (sh -c expansion). Operator-side stdin transport
@@ -1190,11 +1206,9 @@ print('sealed' if data.get('sealed', True) else 'unsealed')
 
   echo "OpenBao is unsealed." >&2
 
-  # Acquire a one-shot root token via the Shamir share quorum so the writes
-  # below succeed (no policy grants secret/data/platform/* to ops-admin).
-  echo "Acquiring temporary root token via Shamir share quorum..." >&2
-  acquire_temp_root "${env_name}"
-  trap 'revoke_temp_root' EXIT INT TERM
+  # The writes below need a root token: no policy grants secret/data/platform/* to
+  # ops-admin.
+  take_write_token "${env_name}"
 
   # Read values from bundle (never print them)
   local admin_username admin_email admin_password k3s_token base_domain
@@ -1833,9 +1847,7 @@ print('sealed' if data.get('sealed', True) else 'unsealed')
   # cmd_seed_bao). Strictly speaking secret/apps/awx/control_node_ssh is
   # within ops-admin's app-admin-writer policy scope, but using the temp
   # root keeps both seed paths consistent and avoids a second auth flow.
-  echo "Acquiring temporary root token via Shamir share quorum..." >&2
-  acquire_temp_root "${env_name}"
-  trap 'revoke_temp_root' EXIT INT TERM
+  take_write_token "${env_name}"
 
   # Check for existing value — idempotent
   local existing
@@ -1887,6 +1899,33 @@ if key:
   }
 
   echo "seed-awx-control-node-ssh complete for ${env_name}" >&2
+}
+
+# seed-install ENV — the seed step of the install. Reads the installer's token from the
+# first line of stdin, seeds OpenBao from the bundle, and seeds the AWX control-node key
+# when DMF_AWX_CONTROL_NODE_SSH_PATH names one. The openbao role of dmf-infra pipes its
+# write token to this command just before it revokes the token, and bin/run-playbook.sh
+# names the command for the playbooks that run the install. Each seed runs in a subshell,
+# so an `exit` inside it ends that seed only. The token stays out of every argument and
+# is never revoked here: the installer owns it.
+cmd_seed_install() {
+  require_env_name "${1:-}"
+  local env_name="$1"
+  if [ -t 0 ]; then
+    echo "ERROR: seed-install reads the installer's token from stdin. The openbao role of the install pipes it." >&2
+    exit 1
+  fi
+  IFS= read -r BAO_INSTALL_TOKEN || true
+  if [ -z "${BAO_INSTALL_TOKEN}" ]; then
+    echo "ERROR: stdin holds no token. seed-install reads the installer's token from the first line." >&2
+    exit 1
+  fi
+  ( cmd_seed_bao "${env_name}" ) || return $?
+  if [ -n "${DMF_AWX_CONTROL_NODE_SSH_PATH:-}" ]; then
+    ( cmd_seed_awx_ssh "${env_name}" ) || return $?
+  else
+    echo "seed-install: DMF_AWX_CONTROL_NODE_SSH_PATH is not set, so the AWX control-node key is not seeded." >&2
+  fi
 }
 
 cmd_status() {
@@ -2067,6 +2106,9 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     seed-awx-control-node-ssh)
       cmd_seed_awx_ssh "$@"
       ;;
+    seed-install)
+      cmd_seed_install "$@"
+      ;;
     status)
       cmd_status "$@"
       ;;
@@ -2085,6 +2127,7 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
       echo "  export-vars <env> <json-out>    Decrypt bundle to Ansible vars JSON" >&2
       echo "  seed-bao <env>                  Seed platform + admin paths into OpenBao" >&2
       echo "  seed-awx-control-node-ssh <env> Seed AWX SSH privkey into OpenBao" >&2
+      echo "  seed-install <env>              Both seeds, as the install runs them (token on stdin)" >&2
       echo "  status <env>                    Report bundle/seed metadata" >&2
       echo "  rotate <env> <field>            Regenerate a specific field" >&2
       echo "  set-base-domain <env> <domain>  Set metadata.base_domain for migration" >&2

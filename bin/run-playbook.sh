@@ -187,6 +187,16 @@ echo "==> Timeout:    ${TIMEOUT_SEC}s (override via RUNBOOK_TIMEOUT=<sec>)" >&2
 echo "==> Stream with: $SCRIPT_DIR/monitor-playbook.sh $LOG_FILE" >&2
 echo >&2
 
+# The playbooks that run the openbao install get the seed step. The role pipes the
+# installer's token to this command on stdin just before it revokes the token. The
+# value is JSON so that the list reaches the role as a list.
+SEED_ARGS=()
+case "$(basename "$PLAYBOOK")" in
+  bootstrap-provision-pre-seed.yml|bootstrap-sandbox-provision-pre-seed.yml|100-openbao.yml)
+    SEED_ARGS=(-e "{\"openbao_install_seed_command\": [\"$SCRIPT_DIR/bootstrap-secrets.sh\", \"seed-install\", \"${ENV_NAME}\"]}")
+    ;;
+esac
+
 set +e
 # Inject dmf_inventory_env_name so consumers (notably dmf-born-inventory)
 # can use the inventory directory name as the fallback identifier on
@@ -196,6 +206,7 @@ timeout "$TIMEOUT_SEC" ansible-playbook \
   -i "$INVENTORY" \
   -e "@${TMP_VARS_FILE}" \
   -e "dmf_inventory_env_name=${ENV_NAME}" \
+  ${SEED_ARGS[@]+"${SEED_ARGS[@]}"} \
   "$PLAYBOOK" \
   "$@" 2>&1 | tee "$LOG_FILE"
 RC=${PIPESTATUS[0]}
