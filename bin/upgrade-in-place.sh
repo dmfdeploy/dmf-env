@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 # upgrade-in-place.sh — idempotent upgrade of an existing DMF env to current main.
 #
-# Canonical upgrade sequence (6 stages):
+# Canonical upgrade sequence (5 stages):
 #   Stage 1 — unseal           — verify every OpenBao pod is unsealed, then run
 #                                the rolling-restart guard (102-openbao-ha-guard.yml)
-#   Stage 2 — seed-bao         — backfill platform+app secrets into OpenBao
-#   Stage 3 — pre-seed         — prepare cluster state for apps
-#   Stage 4 — post-seed        — deploy apps (dependent on seed-bao secrets)
-#   Stage 5 — configure        — final customization
-#   Stage 6 — convergence gates — verify all apps running, cluster converged
+#   Stage 2 — pre-seed         — prepare cluster state for apps
+#   Stage 3 — post-seed        — deploy apps
+#   Stage 4 — configure        — final customization
+#   Stage 5 — convergence gates — verify all apps running, cluster converged
 #
 # A sandbox-lane env (dmf_provider: sandbox) runs the bootstrap-sandbox-* variants of
 # stages 3-5 and of the final verify playbook, the ones it was installed with. The
@@ -19,6 +18,12 @@
 # if nothing changed. It targets an EXISTING env with OpenBao already initialized
 # and unsealed.
 #
+# This wrapper seeds nothing. The install seeds OpenBao inside the openbao role, with
+# the installer's token, and no step after the install makes a root token. Stage 2 runs
+# the same pre-seed wrapper as the install. On an initialized OpenBao the role makes no
+# token and runs no seed, so the stage needs no token. An environment that was installed
+# before the seed moved into the install is rebuilt: this wrapper does not backfill it.
+#
 # CAVEAT: k3s version is NOT upgraded. The playbooks/300-k3s.yml role installs
 # only when k3s is absent; re-running pre-seed on an existing env leaves k3s at
 # its current version. There is NO in-place minor-version jump. The k3s_version
@@ -26,7 +31,7 @@
 # the new CCM/platform on its OLD k3s (acceptable in experiment phase; a true
 # k3s migration requires a separate sequential plan).
 #
-# The playbooks of stages 3-5 can restart an OpenBao pod, and a restarted pod is
+# The playbooks of stages 2-4 can restart an OpenBao pod, and a restarted pod is
 # sealed. Stage 1 therefore refuses while any pod is sealed. On a Raft cluster the
 # guard also refuses while any pod is not a healthy voter, and it needs an ops-admin
 # token in OPENBAO_GUARD_TOKEN. On a single replica the guard passes when that pod
@@ -37,13 +42,13 @@
 #   bin/upgrade-in-place.sh <ENV_NAME>
 #   bin/upgrade-in-place.sh <ENV_NAME> --yes (skip confirm prompt)
 #   bin/upgrade-in-place.sh <ENV_NAME> --skip-unseal-check (skip the stage 1 seal check; the guard still runs)
-#   bin/upgrade-in-place.sh <ENV_NAME> --dry-run (plan without mutating seed-bao)
+#   bin/upgrade-in-place.sh <ENV_NAME> --dry-run (run the stages with --check --diff)
 #
 # Exit codes:
 #   0   upgraded successfully, converged
 #   1   bad arg / config
 #   2   OpenBao unreachable, a pod sealed, or the restart guard refused
-#   3   seed-bao failed
+#   3   (unused)
 #   4   playbook stage failed
 #   5   convergence gate failed
 #   6   bootstrap-verify gate failed
@@ -192,44 +197,23 @@ if ! "$SCRIPT_DIR/run-playbook.sh" "$ENV_NAME" "../dmf-infra/k3s-lab-bootstrap/p
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Stage 2: seed-bao (secret backfill)
+# Confirmation
 # ─────────────────────────────────────────────────────────────────────────────
-
-section "Stage 2: seed-bao (secret backfill)"
-cat <<EOF
-This stage will backfill platform and app secrets from the bootstrap bundle
-into OpenBao. It is idempotent — re-running is safe.
-
-Proceed with upgrade?
-EOF
-echo ""
 
 if [ "$SKIP_CONFIRM" -eq 0 ]; then
   if ! [ -t 0 ]; then
     err "stdin is not a TTY — pass --yes to skip the confirm prompt"
     exit 1
   fi
-  read -r -p "Proceed? [y/N] " ans
+  read -r -p "Run the upgrade stages on $ENV_NAME? [y/N] " ans
   case "$ans" in
     y | Y | yes | YES) ;;
     *) info "aborted"; exit 0 ;;
   esac
 fi
 
-if [ "$DRY_RUN" -eq 1 ]; then
-  info "[dry-run] skipping seed-bao (mutating step)"
-else
-  info "Running seed-bao (de-masked)..."
-  if ! "$SCRIPT_DIR/bootstrap-secrets.sh" seed-bao "$ENV_NAME"; then
-    err "seed-bao failed — secrets NOT seeded; aborting upgrade"
-    err "Set DMF_BUNDLE_SET_DEBUG=1 for per-step detail"
-    exit 3
-  fi
-  info "seed-bao complete — secrets backfilled"
-fi
-
 # ─────────────────────────────────────────────────────────────────────────────
-# Stages 3–5: Run the upgrade stages (pre-seed, post-seed, configure)
+# Stages 2–4: Run the upgrade stages (pre-seed, post-seed, configure)
 # ─────────────────────────────────────────────────────────────────────────────
 
 if [ "$DMF_PROVIDER" = "sandbox" ]; then
@@ -251,7 +235,7 @@ else
   VERIFY_PLAYBOOK="bootstrap-verify.yml"
 fi
 
-STAGE_NUM=3
+STAGE_NUM=2
 for stage in "${STAGES[@]}"; do
   section "Stage $STAGE_NUM: $stage"
   EXTRA_ARGS=""
@@ -267,10 +251,10 @@ for stage in "${STAGES[@]}"; do
 done
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Stage 6: Convergence gates
+# Stage 5: Convergence gates
 # ─────────────────────────────────────────────────────────────────────────────
 
-section "Stage 6: Convergence gates"
+section "Stage 5: Convergence gates"
 
 if [ "$RUN_CONVERGENCE_GATE" -eq 1 ]; then
   info "Running verify-bootstrap-convergence.yml..."

@@ -201,7 +201,8 @@ echo "==> Stream with: $SCRIPT_DIR/monitor-playbook.sh $LOG_FILE" >&2
 echo >&2
 
 # The playbooks that run the openbao install get the seed step. The role pipes the
-# installer's token to this command on stdin just before it revokes the token. The
+# installer's token to this command on stdin just before it revokes the token, because
+# nothing after the install makes a root token (bootstrap-secrets.sh explains why). The
 # value is JSON so that the list reaches the role as a list.
 SEED_ARGS=()
 case "$(basename "$PLAYBOOK")" in
