@@ -2,17 +2,18 @@
 # seed-install.sh — prove the seed-install command of bootstrap-secrets.sh and the way
 # bin/run-playbook.sh names it for the install playbooks.
 #
-# seed-install reads the installer's token from the first line of stdin and runs both
-# seeds with it. It never revokes that token: the installer owns it. The seeds still make
-# their own temporary root token when no installer token is set.
+# seed-install reads the installer's token from the first line of stdin and runs the
+# OpenBao seed with it. It never revokes that token: the installer owns it. The seeds
+# still make their own temporary root token when no installer token is set. The AWX
+# control-node key is not seeded here: the AWX role of the install writes it.
 #
 # Cases:
 #   A  take_write_token with an installer token uses it, makes no root token, sets no trap
 #   B  take_write_token without one calls acquire_temp_root and sets the revoke trap
 #   C  seed-install with empty stdin exits 1 and runs no seed
-#   D  seed-install runs the OpenBao seed with the token, and the AWX seed only when a key
-#      path is set
-#   E  a failing seed stops seed-install before the AWX seed, with the same exit status
+#   D  seed-install runs the OpenBao seed with the token
+#   E  a failing seed gives seed-install the same exit status
+#   G  seed-install never runs the AWX seed, even with a key path set
 #   F  run-playbook.sh passes the seed command to the install playbooks and to no other
 
 # The cases run the code under test in subshells on purpose.
@@ -70,24 +71,26 @@ ERR="$( ( cmd_seed_bao() { echo bao >> "${ran}"; }; cmd_seed_install fake-env </
 if [ "${rc}" -eq 1 ] && grep -q "stdin holds no token" <<<"${ERR}"; then pass "exit 1 with a message"; else fail "rc ${rc}: ${ERR}"; fi
 if [ ! -s "${ran}" ]; then pass "no seed ran"; else fail "a seed ran"; fi
 
-echo "Case D: the seeds"
+echo "Case D: the seed"
 seen="${WORK_DIR}/seen-d"
 : > "${seen}"
 cmd_seed_bao() { printf 'bao %s %s\n' "$1" "${BAO_INSTALL_TOKEN}" >> "${seen}"; }
-cmd_seed_awx_ssh() { printf 'awx %s %s\n' "$1" "${BAO_INSTALL_TOKEN}" >> "${seen}"; }
-printf '%s\nextra-line\n' "${INSTALLER_TOKEN}" | (unset DMF_AWX_CONTROL_NODE_SSH_PATH; cmd_seed_install fake-env) 2>/dev/null
-if [ "$(cat "${seen}")" = "bao fake-env ${INSTALLER_TOKEN}" ]; then pass "OpenBao seed only, without a key path"; else fail "seen: $(cat "${seen}")"; fi
-: > "${seen}"
-printf '%s\n' "${INSTALLER_TOKEN}" | (DMF_AWX_CONTROL_NODE_SSH_PATH=/some/key cmd_seed_install fake-env) 2>/dev/null
-if [ "$(cat "${seen}")" = "bao fake-env ${INSTALLER_TOKEN}
-awx fake-env ${INSTALLER_TOKEN}" ]; then pass "AWX seed after OpenBao, same token"; else fail "seen: $(cat "${seen}")"; fi
+printf '%s\nextra-line\n' "${INSTALLER_TOKEN}" | cmd_seed_install fake-env 2>/dev/null
+if [ "$(cat "${seen}")" = "bao fake-env ${INSTALLER_TOKEN}" ]; then pass "OpenBao seed with the installer's token"; else fail "seen: $(cat "${seen}")"; fi
 
 echo "Case E: a failing seed"
 : > "${seen}"
 cmd_seed_bao() { printf 'bao\n' >> "${seen}"; exit 3; }
 rc=0
-printf '%s\n' "${INSTALLER_TOKEN}" | (DMF_AWX_CONTROL_NODE_SSH_PATH=/some/key cmd_seed_install fake-env) >/dev/null 2>&1 || rc=$?
-if [ "${rc}" -eq 3 ] && [ "$(cat "${seen}")" = "bao" ]; then pass "exit 3, no AWX seed"; else fail "rc ${rc}, seen: $(cat "${seen}")"; fi
+printf '%s\n' "${INSTALLER_TOKEN}" | cmd_seed_install fake-env >/dev/null 2>&1 || rc=$?
+if [ "${rc}" -eq 3 ] && [ "$(cat "${seen}")" = "bao" ]; then pass "exit 3"; else fail "rc ${rc}, seen: $(cat "${seen}")"; fi
+
+echo "Case G: no AWX seed"
+: > "${seen}"
+cmd_seed_bao() { printf 'bao\n' >> "${seen}"; }
+cmd_seed_awx_ssh() { printf 'awx\n' >> "${seen}"; }
+printf '%s\n' "${INSTALLER_TOKEN}" | (DMF_AWX_CONTROL_NODE_SSH_PATH=/some/key cmd_seed_install fake-env) >/dev/null 2>&1
+if [ "$(cat "${seen}")" = "bao" ]; then pass "the AWX seed does not run with a key path set"; else fail "seen: $(cat "${seen}")"; fi
 
 echo "Case F: run-playbook.sh"
 snippet="${WORK_DIR}/snippet.sh"
