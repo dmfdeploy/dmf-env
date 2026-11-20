@@ -36,7 +36,7 @@ bin/                         wrapper scripts + secrets discipline
   run-playbook.sh            sanctioned ansible entry point (ADR-0010); injects secrets, enforces timeouts
   tf-apply.sh / tf-destroy.sh  OpenTofu wrappers (hetzner)
   tf-render-inventory.sh     regenerate hosts.ini from tofu state
-  bootstrap-secrets.sh       doctor / seed-bao / export-vars subcommands
+  bootstrap-secrets.sh       doctor / seed-install / export-vars subcommands
   unseal-openbao.sh          Shamir-quorum OpenBao unseal
   monitor-playbook.sh        stream a filtered playbook log
   lib/_resolve_env_paths.sh  resolves the operator-local env layout
@@ -106,7 +106,6 @@ bin/init-wizard.sh            # choose `sandbox` at the provider prompt
 
 bin/bootstrap-secrets.sh doctor <env>     # verify the bundle decrypts
 bin/run-playbook.sh <env> ../dmf-infra/k3s-lab-bootstrap/bootstrap-sandbox-provision-pre-seed.yml
-bin/bootstrap-secrets.sh seed-bao <env>
 bin/run-playbook.sh <env> ../dmf-infra/k3s-lab-bootstrap/bootstrap-sandbox-provision-post-seed.yml
 bin/run-playbook.sh <env> ../dmf-infra/k3s-lab-bootstrap/bootstrap-sandbox-configure.yml
 bin/run-playbook.sh <env> ../dmf-infra/k3s-lab-bootstrap/bootstrap-sandbox-verify.yml
@@ -131,11 +130,35 @@ bin/tf-apply.sh <env> apply plan.bin
 bin/run-playbook.sh <env> ../dmf-infra/k3s-lab-bootstrap/bootstrap-provision-pre-seed.yml
 # capture the 5 Shamir shares at init (operator-only, manual)
 bin/unseal-openbao.sh <env>
-bin/bootstrap-secrets.sh seed-bao <env>
 bin/run-playbook.sh <env> ../dmf-infra/k3s-lab-bootstrap/bootstrap-provision-post-seed.yml
 ```
 
 See `terraform/README.md` for the OpenTofu (Layer-1) detail.
+
+### Seeding OpenBao
+
+The seed writes `secret/platform/*` and the per-app admin paths, which no standing
+identity may write, so it needs a root token. Nothing makes one after an install: only
+the approval executor generates root tokens, and `ops-admin` doesn't hold the
+`generate-root` policy. So the seed runs inside the install, while the installer's own
+token is live.
+
+`bin/run-playbook.sh` names the command (`bootstrap-secrets.sh seed-install <env>`) for
+the pre-seed playbooks and `100-openbao.yml`. The openbao role of dmf-infra runs it on
+this host just before it revokes its write token, and pipes the token to its stdin. The
+seed never takes the token in an argument and revokes nothing. That is why the sequences
+above have no separate seed step.
+
+`seed-bao`, `seed-awx-control-node-ssh` and `seed-install` read the token from the first
+line of stdin. Run from a terminal, or with an empty stdin, they stop with a message
+before they call OpenBao. `seed-install` runs `seed-bao` only: the awx-integration role
+of dmf-infra writes the AWX control-node key during the install. An environment that needs a seed after its
+install is rebuilt.
+
+`bin/upgrade-in-place.sh` seeds nothing. It applies the current playbooks to an
+environment that the install of this release seeded. The pre-seed wrapper that it runs
+makes no token and runs no seed on an initialized OpenBao. An environment installed
+before the seed moved into the install is rebuilt: the upgrade doesn't backfill it.
 
 ## Cross-platform notes
 

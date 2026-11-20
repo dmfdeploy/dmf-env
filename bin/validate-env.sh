@@ -70,7 +70,7 @@ if is_sandbox; then
   echo ""
   echo "Next steps:"
   echo "  bin/run-playbook.sh $ENV_NAME ../dmf-infra/k3s-lab-bootstrap/bootstrap-provision-pre-seed.yml"
-  echo "  (then seed-bao → post-seed → configure → verify)"
+  echo "  (it seeds OpenBao; then post-seed → configure → verify)"
 else
   echo "==> Step 2: terraform init"
   if ! "$SCRIPT_DIR/tf-apply.sh" "$ENV_NAME" init; then
@@ -93,5 +93,5 @@ else
   echo "Next steps:"
   echo "  bin/tf-apply.sh $ENV_NAME apply              # creates cloud resources"
   echo "  bin/run-playbook.sh $ENV_NAME ../dmf-infra/k3s-lab-bootstrap/bootstrap-provision-pre-seed.yml"
-  echo "  (then seed-bao → post-seed → configure → verify)"
+  echo "  (it seeds OpenBao; then post-seed → configure → verify)"
 fi

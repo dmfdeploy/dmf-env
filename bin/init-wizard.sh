@@ -2095,10 +2095,10 @@ EOF
        ../dmf-infra/k3s-lab-bootstrap/bootstrap-sandbox-provision-pre-seed.yml
 
   4. OpenBao Tier-3 self-recovering unseal runs in-profile (Shamir 1/1; key
-     under ${ENV_ROOT}/openbao-keys — no JuiceFS/Keychain/USB).
-     Then seed (writes the bundle's cluster.k3s_token into OpenBao as
-     vault_k3s_token, which the inventory maps to k3s_token):
-     ${SCRIPT_DIR}/bootstrap-secrets.sh seed-bao ${ENV_ID}
+     under ${ENV_ROOT}/openbao-keys — no JuiceFS/Keychain/USB). Step 3 also
+     seeds OpenBao from the bundle (the bundle's cluster.k3s_token becomes
+     vault_k3s_token, which the inventory maps to k3s_token): the install runs
+     the seed while its own token is live, and nothing after it makes a root token.
 
   5. Post-seed (apps + monitoring + catalog):
      RUNBOOK_TIMEOUT=5400 ${SCRIPT_DIR}/run-playbook.sh ${ENV_ID} \\
@@ -2179,8 +2179,7 @@ EOF
   6. Unseal OpenBao:
      ${SCRIPT_DIR}/unseal-openbao.sh ${ENV_ID}
 
-  7. Seed secrets from the bundle:
-     ${SCRIPT_DIR}/bootstrap-secrets.sh seed-bao ${ENV_ID}
+  7. (Step 4 already seeded OpenBao from the bundle, with the install's token.)
 
   8. Post-seed (monitoring → apps → vertical-resilience):
      RUNBOOK_TIMEOUT=5400 ${SCRIPT_DIR}/run-playbook.sh ${ENV_ID} \\

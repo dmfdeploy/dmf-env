@@ -160,7 +160,6 @@ ${c_bold}Next — re-run the sandbox bootstrap (reuses ${ENV_NAME}; no wizard ne
   rm -rf "${SECURE_DIR}"          # drop the old cluster's OpenBao keys; fresh init regenerates
   cd "${REPO_DIR}"
   bin/run-playbook.sh ${ENV_NAME} ../dmf-infra/k3s-lab-bootstrap/bootstrap-sandbox-provision-pre-seed.yml
-  bin/bootstrap-secrets.sh seed-bao ${ENV_NAME}
   bin/run-playbook.sh ${ENV_NAME} ../dmf-infra/k3s-lab-bootstrap/bootstrap-sandbox-provision-post-seed.yml
   bin/run-playbook.sh ${ENV_NAME} ../dmf-infra/k3s-lab-bootstrap/bootstrap-sandbox-configure.yml
   bin/run-playbook.sh ${ENV_NAME} ../dmf-infra/k3s-lab-bootstrap/bootstrap-sandbox-verify.yml
@@ -175,7 +174,7 @@ ${c_bold}Next — run the init wizard for a FRESH env, then bootstrap:${c_rst}
                              #   ${c_bold}${NEW_IP}${c_rst}
                              # SSH user = your Lima guest user; iface = ${GUEST_BRIDGE_IF}
   # then, with the wizard-printed <env_id>, run the 5-stage bootstrap it lists
-  # (pre-seed → seed-bao → post-seed → configure → verify).
+  # (pre-seed, which seeds OpenBao → post-seed → configure → verify).
 NEXT
 fi
 

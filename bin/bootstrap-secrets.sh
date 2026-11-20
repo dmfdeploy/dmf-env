@@ -5,10 +5,11 @@
 #   init <env>                    — create or update encrypted bundle
 #   doctor <env>                  — validate bundle and local prerequisites
 #   export-vars <env> <json-out>  — decrypt bundle to Ansible vars JSON
-#   seed-bao <env>                — seed platform + admin paths into OpenBao
-#   seed-awx-control-node-ssh <env> — seed AWX SSH privkey into OpenBao
-#   seed-install <env>            — the seed step of the install: seed-bao, with the
-#                                   installer's token read from stdin
+#   seed-bao <env>                — seed platform + admin paths into OpenBao; reads the
+#                                   installer's initial root token from stdin
+#   seed-awx-control-node-ssh <env> — seed AWX SSH privkey into OpenBao; reads the
+#                                   installer's token from stdin
+#   seed-install <env>            — the seed step of the install: seed-bao, one token
 #   status <env>                  — report bundle/seed metadata only
 #   rotate <env> <field>          — regenerate a specific field (optional)
 #   set-base-domain <env> <domain> — set metadata.base_domain for migration
@@ -20,7 +21,7 @@
 #   bin/bootstrap-secrets.sh init <env-id>
 #   bin/bootstrap-secrets.sh doctor <env-id>
 #   bin/bootstrap-secrets.sh export-vars <env-id> /tmp/vars.json
-#   bin/bootstrap-secrets.sh seed-bao <env-id>
+#   printf '%s\n' "$INSTALLER_TOKEN" | bin/bootstrap-secrets.sh seed-bao <env-id>   # token on stdin
 #   bin/bootstrap-secrets.sh seed-awx-control-node-ssh <env-id>
 #   bin/bootstrap-secrets.sh status <env-id>
 
@@ -743,9 +744,9 @@ if admin.get('password'):
 # machine-write account used by 331-registry-zot's htpasswd, playbook 630,
 # and zot-mirror. INDEPENDENT of the admin/bootstrap password — read it
 # straight from the bundle (NOT a compatibility copy). Absent on bundles
-# predating ADR-0033; seed-bao generates and writes it back, after which it
-# surfaces here. While absent, the zot role's '| mandatory' fails loudly —
-# the migration signal to run seed-bao first.
+# predating ADR-0033; the install's seed generates and writes it back, after
+# which it surfaces here. While absent, the zot role's '| mandatory' fails
+# loudly: the environment was installed before the seed wrote it, so it is rebuilt.
 apps = data.get('apps', {})
 zot_app = apps.get('zot', {}) if isinstance(apps, dict) else {}
 if zot_app.get('service_password'):
@@ -852,38 +853,32 @@ with open(sys.argv[1], 'w') as f:
 }
 
 # ──────────────────────────────────────────────────────────────
-# Temporary root token via Shamir share quorum
+# Which token the OpenBao writes use
 # ──────────────────────────────────────────────────────────────
-# seed-bao writes to `secret/platform/*` and `secret/apps/*/admin`. Neither
-# the post-init ops-admin (app-admin-writer policy) nor the policy-reconciler
-# (sys/policies/acl/*) has write capability on `secret/data/platform/*`, so
-# the script must elevate.
+# This script makes no root token. After an install, only the approval executor
+# generates root tokens (ADR-0051, Amendment 2026-11-18), and ops-admin never holds
+# the generate-root policy, so a quorum of unseal shares and the ops-admin password
+# together are no path to one.
 #
-# This mirrors the "Rotate OpenBao ops-admin password" play in
-# playbooks/vertical-orchestration/120-ops-admin-rotation.yml: log in as
-# ops-admin, read 3 Shamir shares from the breakglass JSON, run
-# `bao operator generate-root` with the login token to mint a one-shot root
-# token, perform writes, then revoke both tokens with `bao token revoke -self`.
-# OpenBao 2.6 and later accept generate-root only from an authenticated caller.
-# Rationale recorded in the implementation plan §22 (added with this commit).
+# The seed writes `secret/platform/*` and the per-app paths, which no standing identity
+# may write, so they run inside the install, while the installer's token is live. The
+# openbao role of dmf-infra pipes that token to `seed-install` on stdin just before it
+# revokes the token, and bin/run-playbook.sh names the command for the playbooks that run
+# the install. `seed-bao` and `seed-awx-control-node-ssh` read the token from stdin the
+# same way and revoke nothing: the installer owns the token.
 #
-# Globals set by acquire_temp_root and consumed by helpers below:
+# Globals consumed by the helpers below:
 #   BAO_POD          OpenBao pod name in the openbao namespace
-#   BAO_ROOT_TOKEN   The decoded one-shot root token (no_log domain)
-#   BAO_LOGIN_TOKEN  The ops-admin login token that authorizes generate-root
-#   BAO_LOGIN_ACCESSOR, BAO_ROOT_ACCESSOR  Accessors, kept for the failure message of
-#                    a revoke that does not work
-#   BAO_ISSUANCE_UNCERTAIN  1 from the moment the last share was accepted until the
-#                    root token is decoded: a token may exist that nothing can revoke
+#   BAO_WRITE_TOKEN  The installer's token, read from stdin (no_log domain)
 
 BAO_POD=""
 
 # find_active_bao_pod — set BAO_POD to the one pod that reports itself as the active
 # node. `bao status -format=json` needs no token and prints "is_self": true on the active
 # node of a cluster only (the field is omitted when false: command/format.go in v2.5.2
-# and internal/command/format.go in v2.7.2). A standby answers the legacy generate-root
-# endpoints with a 500, and a sealed pod reports no is_self, so the first pod of the list is
-# no safe choice. Stops when no pod, or more than one, reports itself as active.
+# and internal/command/format.go in v2.7.2). A sealed pod reports no is_self, so the first
+# pod of the list is no safe choice. Stops when no pod, or more than one, reports itself
+# as active.
 find_active_bao_pod() {
   local pods pod status active=()
   pods="$(remote_kubectl get pods -n openbao -l app.kubernetes.io/name=openbao -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)" || pods=""
@@ -908,262 +903,45 @@ find_active_bao_pod() {
   fi
   BAO_POD="${active[0]}"
 }
-BAO_ROOT_TOKEN=""
-BAO_LOGIN_TOKEN=""
-BAO_LOGIN_ACCESSOR=""
-BAO_ROOT_ACCESSOR=""
-BAO_ISSUANCE_UNCERTAIN=0
-BAO_REVOKE_FAILED=0
-# A failed revoke is tried this many times, this many seconds apart.
-BAO_REVOKE_RETRIES="${BAO_REVOKE_RETRIES:-3}"
-BAO_REVOKE_RETRY_DELAY="${BAO_REVOKE_RETRY_DELAY:-2}"
+BAO_WRITE_TOKEN=""
 
-# bao_generate_root ARGS... — run `bao operator generate-root ARGS...` in the pod.
-# The login token goes to the pod on the first line of stdin, and the caller's
-# stdin follows it, so the token and the shares stay out of every local, ssh and
-# kubectl argument.
-# A caller with nothing to send redirects stdin from /dev/null.
-bao_generate_root() {
-  # shellcheck disable=SC2016
-  { printf '%s\n' "${BAO_LOGIN_TOKEN}"; cat; } | \
-    remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
-      IFS= read -r BAO_TOKEN
-      export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
-      exec bao operator generate-root "$@"
-    ' bao_generate_root "$@"
+# read_installer_token — set BAO_WRITE_TOKEN from the first line of stdin, unless a
+# caller that runs several seeds has set it already. The token never appears in an
+# argument or in the environment of a child process. Stops with a message when stdin
+# is a terminal or holds no token: after the install no step makes a root token.
+read_installer_token() {
+  [ -z "${BAO_WRITE_TOKEN}" ] || return 0
+  if [ -t 0 ]; then
+    echo "ERROR: this command writes with the installer's initial root token, and reads it from stdin." >&2
+    echo "  The installer revokes that token when the install ends, and no later step makes a root" >&2
+    echo "  token: only the approval executor generates one. The seed runs inside the install now:" >&2
+    echo "  bin/run-playbook.sh passes 'seed-install' to the openbao role, which pipes the token to it." >&2
+    echo "  A caller that runs seed-bao as a separate step after the install (the seed-bao step of" >&2
+    echo "  dmf-init) must drop that step. An environment that needs a seed after its install is rebuilt." >&2
+    exit 1
+  fi
+  IFS= read -r BAO_WRITE_TOKEN || true
+  if [ -z "${BAO_WRITE_TOKEN}" ]; then
+    echo "ERROR: stdin holds no token. The command reads the installer's initial root token from the first line." >&2
+    echo "  Run it from the install (see the message above for a terminal), not as a step after it." >&2
+    exit 1
+  fi
 }
 
-# bao_generate_root_otp OTP ARGS... — the same for the calls that carry the OTP. The
-# token and the OTP are the first two lines of stdin, so the OTP stays out of every
-# local, ssh and kubectl argument. It is visible in the arguments of the bao process
-# inside the pod while the command runs, because the CLI takes it only as a flag. It
-# is single use and worthless without the encoded token.
-bao_generate_root_otp() {
-  local otp="$1"
-  shift
-  # shellcheck disable=SC2016
-  { printf '%s\n%s\n' "${BAO_LOGIN_TOKEN}" "${otp}"; cat; } | \
-    remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
-      IFS= read -r BAO_TOKEN
-      IFS= read -r OTP
-      export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
-      exec bao operator generate-root "$@" -otp="$OTP"
-    ' bao_generate_root_otp "$@"
-}
-
-acquire_temp_root() {
-  local env_name="$1"
-
-  # Resolve the breakglass file path from inventory. eso_openbao_breakglass_file
-  # is the canonical name; fall back to openbao_key_path + ".json" so envs that
-  # haven't migrated to the explicit var still work.
-  local breakglass_file
-  breakglass_file="$(inventory_group_var "${env_name}" eso_openbao_breakglass_file || true)"
-  if [ -z "${breakglass_file}" ]; then
-    local key_path
-    key_path="$(inventory_group_var "${env_name}" openbao_key_path || true)"
-    [ -n "${key_path}" ] && breakglass_file="${key_path}.json"
-  fi
-  if [ -z "${breakglass_file}" ]; then
-    echo "ERROR: cannot resolve breakglass file path for env '${env_name}'." >&2
-    echo "  Set eso_openbao_breakglass_file or openbao_key_path in" >&2
-    echo "  ${DMF_ENV_INVENTORY_DIR}/group_vars/all/." >&2
-    exit 1
-  fi
-  breakglass_file="$(expand_local_path "${breakglass_file}")"
-  if [ ! -r "${breakglass_file}" ]; then
-    echo "ERROR: breakglass file not readable: ${breakglass_file}" >&2
-    echo "  Run the pre-seed provision first so the OpenBao role can write it." >&2
-    exit 1
-  fi
-
-  # Pull the first <threshold> Shamir shares. The threshold is read from the
-  # break-glass JSON (the openbao role writes shamir_threshold — sandbox is 1,
-  # lab/cloud is 3); default 3 for legacy files that predate the field.
-  local threshold
-  threshold="$(jq -r '(.shamir_threshold // 3) | tonumber' "${breakglass_file}" 2>/dev/null)" || threshold=3
-  [ "${threshold}" -ge 1 ] 2>/dev/null || threshold=3
-  local shares
-  shares="$(jq -r --argjson threshold "${threshold}" '(.unseal_keys_hex // []) | .[0:$threshold] | .[]' "${breakglass_file}" 2>/dev/null)" || shares=""
-  if [ "$(printf '%s\n' "${shares}" | grep -c .)" -lt "${threshold}" ]; then
-    echo "ERROR: breakglass file lacks ${threshold} unseal_keys_hex shares (threshold ${threshold}): ${breakglass_file}" >&2
-    exit 1
-  fi
-
-  # Log in as ops-admin. The password reaches the pod on stdin (`password=-`).
-  # The EXIT trap goes in now, so a failure below still revokes the login token.
-  local ops_user ops_password login
-  ops_user="$(jq -r '.ops_admin_username // empty' "${breakglass_file}" 2>/dev/null)" || ops_user=""
-  ops_password="$(jq -r '.ops_admin_password // empty' "${breakglass_file}" 2>/dev/null)" || ops_password=""
-  if [ -z "${ops_user}" ] || [ -z "${ops_password}" ]; then
-    echo "ERROR: breakglass file lacks ops_admin_username or ops_admin_password: ${breakglass_file}" >&2
-    exit 1
-  fi
-  login="$(printf '%s' "${ops_password}" | remote_kubectl exec -i -n openbao "${BAO_POD}" -- bao write -format=json "auth/userpass/login/${ops_user}" password=- 2>/dev/null)" || login=""
-  BAO_LOGIN_TOKEN="$(printf '%s' "${login}" | jq -r '.auth.client_token // empty' 2>/dev/null)" || BAO_LOGIN_TOKEN=""
-  BAO_LOGIN_ACCESSOR="$(printf '%s' "${login}" | jq -r '.auth.accessor // empty' 2>/dev/null)" || BAO_LOGIN_ACCESSOR=""
-  if [ -z "${BAO_LOGIN_TOKEN}" ]; then
-    echo "ERROR: ops-admin login failed" >&2
-    exit 1
-  fi
-  trap 'revoke_temp_root' EXIT INT TERM
-
-  # Cancel any stale generate-root attempt left behind by a previous failed run.
-  bao_generate_root -cancel </dev/null >/dev/null 2>&1 || true
-
-  # Generate OTP for the root-generation ceremony.
-  local otp
-  otp="$(bao_generate_root -generate-otp -format=json </dev/null 2>/dev/null | jq -r '.otp // empty')"
-  if [ -z "${otp}" ]; then
-    echo "ERROR: failed to generate root-generation OTP" >&2
-    exit 1
-  fi
-
-  # Init the ceremony with the OTP and capture the nonce.
-  local nonce
-  nonce="$(bao_generate_root_otp "${otp}" -init -format=json </dev/null 2>/dev/null | jq -r '.nonce // empty')"
-  if [ -z "${nonce}" ]; then
-    echo "ERROR: failed to start root-generation attempt" >&2
-    exit 1
-  fi
-
-  # Submit each share via stdin. The last share's response carries
-  # `encoded_token` (older bao versions used `encoded_root_token`). Once the last
-  # share is accepted OpenBao has issued a root token, so a failure from then until
-  # the decode leaves a token that this script cannot revoke: the cleanup says so.
-  local share encoded_token="" submitted=0
-  while IFS= read -r share; do
-    [ -n "${share}" ] || continue
-    local result
-    submitted=$((submitted + 1))
-    result="$(printf '%s' "${share}" | bao_generate_root -nonce="${nonce}" -format=json -)" || {
-      echo "ERROR: Shamir share submission failed" >&2
-      [ "${submitted}" -lt "${threshold}" ] || BAO_ISSUANCE_UNCERTAIN=1
-      bao_generate_root -cancel </dev/null >/dev/null 2>&1 || true
-      exit 1
-    }
-    encoded_token="$(printf '%s' "${result}" | jq -r '.encoded_token // .encoded_root_token // empty')"
-    [ -n "${encoded_token}" ] && break
-  done <<EOF
-${shares}
-EOF
-
-  if [ "${submitted}" -ge "${threshold}" ]; then
-    BAO_ISSUANCE_UNCERTAIN=1
-  fi
-  if [ -z "${encoded_token}" ]; then
-    echo "ERROR: no encoded root token returned after submitting shares" >&2
-    bao_generate_root -cancel </dev/null >/dev/null 2>&1 || true
-    exit 1
-  fi
-
-  # Decode the encoded token using the OTP to get the real one-shot root token.
-  local decoded
-  decoded="$(printf '%s' "${encoded_token}" | bao_generate_root_otp "${otp}" -decode=- -format=json)" || decoded=""
-  BAO_ROOT_TOKEN="$(printf '%s' "${decoded}" | jq -r '.token // .data.token // empty' 2>/dev/null)" || BAO_ROOT_TOKEN=""
-  if [ -z "${BAO_ROOT_TOKEN}" ]; then
-    echo "ERROR: failed to decode root token. The last share was accepted, so a root token may exist." >&2
-    exit 1
-  fi
-  BAO_ISSUANCE_UNCERTAIN=0
-  BAO_ROOT_ACCESSOR="$(printf '%s\n' "${BAO_ROOT_TOKEN}" | remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
-    IFS= read -r BAO_TOKEN
-    export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
-    bao token lookup -format=json
-  ' 2>/dev/null | jq -r '.data.accessor // empty' 2>/dev/null)" || BAO_ROOT_ACCESSOR=""
-}
-
-# bao_revoke_self TOKEN — `bao token revoke -self` with the token on stdin, tried
-# BAO_REVOKE_RETRIES times. Returns non-zero when every try failed.
-bao_revoke_self() {
-  local token="$1" try=1
-  while :; do
-    if printf '%s\n' "${token}" | \
-      remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
-        IFS= read -r BAO_TOKEN
-        export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
-        bao token revoke -self
-      ' >/dev/null 2>&1; then
-      return 0
-    fi
-    [ "${try}" -lt "${BAO_REVOKE_RETRIES}" ] || return 1
-    try=$((try + 1))
-    sleep "${BAO_REVOKE_RETRY_DELAY}"
-  done
-}
-
-# Revokes the temporary root token, then the ops-admin login token. It runs as the
-# EXIT trap, so it must not hide a failure: a revoke that fails every try, or a root
-# token that may exist without a decode, prints how to revoke it and ends the script
-# with a non-zero status, even when everything before it worked. A token that was
-# revoked is cleared, so a second call has nothing left to revoke.
-revoke_temp_root() {
-  [ -n "${BAO_POD:-}" ] || return 0
-  [ "${BAO_REVOKE_FAILED}" -eq 0 ] || exit 1
-
-  if [ -n "${BAO_ROOT_TOKEN:-}" ]; then
-    if bao_revoke_self "${BAO_ROOT_TOKEN}"; then
-      BAO_ROOT_TOKEN=""
-    else
-      echo "ERROR: could not revoke the temporary root token after ${BAO_REVOKE_RETRIES} tries. A live root token may remain." >&2
-      echo "  Accessor: ${BAO_ROOT_ACCESSOR:-unknown}. Revoke it now with: bao token revoke -accessor <accessor>" >&2
-      echo "  (with a new temporary root token if you have no other that may revoke it)." >&2
-      BAO_ROOT_TOKEN=""
-      BAO_REVOKE_FAILED=1
-    fi
-  fi
-
-  if [ -n "${BAO_LOGIN_TOKEN:-}" ]; then
-    if bao_revoke_self "${BAO_LOGIN_TOKEN}"; then
-      BAO_LOGIN_TOKEN=""
-    else
-      echo "ERROR: could not revoke the ops-admin login token after ${BAO_REVOKE_RETRIES} tries. It stays valid until its TTL." >&2
-      echo "  Accessor: ${BAO_LOGIN_ACCESSOR:-unknown}. Revoke it with: bao token revoke -accessor <accessor>" >&2
-      BAO_LOGIN_TOKEN=""
-      BAO_REVOKE_FAILED=1
-    fi
-  fi
-
-  if [ "${BAO_ISSUANCE_UNCERTAIN}" -eq 1 ] && [ -z "${BAO_ROOT_TOKEN}" ]; then
-    echo "ERROR: the last unseal share was accepted but the root token was not decoded, so a root token may exist that nothing revoked." >&2
-    echo "  Recover as the openbao role README describes (Root token procedure): generate a new temporary root token," >&2
-    echo "  list the accessors with: bao list auth/token/accessors, look each one up, and revoke the orphan with:" >&2
-    echo "  bao token revoke -accessor <accessor>. Then revoke the new temporary token." >&2
-    BAO_ISSUANCE_UNCERTAIN=0
-    BAO_REVOKE_FAILED=1
-  fi
-
-  [ "${BAO_REVOKE_FAILED}" -eq 0 ] || exit 1
-}
-
-# bao_kv_get PATH — read a path with the temp root token; emits JSON or
+# bao_kv_get PATH — read a path with BAO_WRITE_TOKEN; emits JSON or
 # nothing on miss/error. Caller treats empty as "not present".
 # Stderr suppression covers both bao's own "No value found at..." noise and
 # kubectl's "command terminated with exit code N" message on miss.
 bao_kv_get() {
   local path="$1"
   {
-    printf '%s\n' "${BAO_ROOT_TOKEN}" | \
+    printf '%s\n' "${BAO_WRITE_TOKEN}" | \
       remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
         IFS= read -r BAO_TOKEN
         export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
         bao kv get -format=json "$1" 2>/dev/null
       ' bao_kv_get "${path}"
   } 2>/dev/null
-}
-
-# take_write_token ENV — set BAO_ROOT_TOKEN for the writes of a seed. When seed-install
-# has read the installer's token (BAO_INSTALL_TOKEN), the seed writes with it and
-# revokes nothing: the installer owns that token. Otherwise the seed makes a temporary
-# root token through the Shamir share quorum and revokes it on exit.
-take_write_token() {
-  if [ -n "${BAO_INSTALL_TOKEN:-}" ]; then
-    BAO_ROOT_TOKEN="${BAO_INSTALL_TOKEN}"
-    return 0
-  fi
-  echo "Acquiring temporary root token via Shamir share quorum..." >&2
-  acquire_temp_root "$1"
-  trap 'revoke_temp_root' EXIT INT TERM
 }
 
 cmd_seed_bao() {
@@ -1207,8 +985,9 @@ print('sealed' if data.get('sealed', True) else 'unsealed')
   echo "OpenBao is unsealed." >&2
 
   # The writes below need a root token: no policy grants secret/data/platform/* to
-  # ops-admin.
-  take_write_token "${env_name}"
+  # ops-admin. The installer's initial token arrives on stdin, and the installer
+  # revokes it.
+  read_installer_token
 
   # Read values from bundle (never print them)
   local admin_username admin_email admin_password k3s_token base_domain
@@ -1243,7 +1022,7 @@ print(data.get('data', {}).get('data', {}).get('username', ''))
     echo "  secret/platform/bootstrap_admin: same value, no-op" >&2
   else
     echo "  Writing secret/platform/bootstrap_admin..." >&2
-    printf '%s\n%s\n%s\n%s\n' "${BAO_ROOT_TOKEN}" "${admin_username}" "${admin_email}" "${admin_password}" | \
+    printf '%s\n%s\n%s\n%s\n' "${BAO_WRITE_TOKEN}" "${admin_username}" "${admin_email}" "${admin_password}" | \
       remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
         IFS= read -r BAO_TOKEN
         export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
@@ -1268,7 +1047,7 @@ print(data.get('data', {}).get('data', {}).get('username', ''))
     echo "  secret/platform/k3s/cluster: already exists, skipping" >&2
   else
     echo "  Writing secret/platform/k3s/cluster..." >&2
-    printf '%s\n%s\n' "${BAO_ROOT_TOKEN}" "${k3s_token}" | \
+    printf '%s\n%s\n' "${BAO_WRITE_TOKEN}" "${k3s_token}" | \
       remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
         IFS= read -r BAO_TOKEN
         export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
@@ -1314,7 +1093,7 @@ print(data.get('data', {}).get('data', {}).get('username', ''))
   existing_hcloud="$(bao_kv_get secret/platform/hetzner)" || existing_hcloud=""
   if [ -z "${existing_hcloud}" ] && [ -n "${hcloud_token}" ]; then
     echo "  Writing secret/platform/hetzner..." >&2
-    printf '%s\n%s\n' "${BAO_ROOT_TOKEN}" "${hcloud_token}" | \
+    printf '%s\n%s\n' "${BAO_WRITE_TOKEN}" "${hcloud_token}" | \
       remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
         IFS= read -r BAO_TOKEN
         export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
@@ -1330,7 +1109,7 @@ print(data.get('data', {}).get('data', {}).get('username', ''))
   existing_alicloud="$(bao_kv_get secret/platform/alicloud)" || existing_alicloud=""
   if [ -z "${existing_alicloud}" ] && [ -n "${alicloud_access_key}" ]; then
     echo "  Writing secret/platform/alicloud..." >&2
-    printf '%s\n%s\n%s\n' "${BAO_ROOT_TOKEN}" "${alicloud_access_key}" "${alicloud_secret_key}" | \
+    printf '%s\n%s\n%s\n' "${BAO_WRITE_TOKEN}" "${alicloud_access_key}" "${alicloud_secret_key}" | \
       remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
         IFS= read -r BAO_TOKEN
         export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
@@ -1347,7 +1126,7 @@ print(data.get('data', {}).get('data', {}).get('username', ''))
   existing_aws="$(bao_kv_get secret/platform/aws)" || existing_aws=""
   if [ -z "${existing_aws}" ] && [ -n "${aws_access_key_id}" ]; then
     echo "  Writing secret/platform/aws..." >&2
-    printf '%s\n%s\n%s\n%s\n' "${BAO_ROOT_TOKEN}" "${aws_access_key_id}" "${aws_secret_access_key}" "${aws_region}" | \
+    printf '%s\n%s\n%s\n%s\n' "${BAO_WRITE_TOKEN}" "${aws_access_key_id}" "${aws_secret_access_key}" "${aws_region}" | \
       remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
         IFS= read -r BAO_TOKEN
         export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
@@ -1365,7 +1144,7 @@ print(data.get('data', {}).get('data', {}).get('username', ''))
   existing_cf="$(bao_kv_get secret/platform/cloudflare)" || existing_cf=""
   if [ -z "${existing_cf}" ] && [ -n "${cf_dns_token}" ]; then
     echo "  Writing secret/platform/cloudflare..." >&2
-    printf '%s\n%s\n' "${BAO_ROOT_TOKEN}" "${cf_dns_token}" | \
+    printf '%s\n%s\n' "${BAO_WRITE_TOKEN}" "${cf_dns_token}" | \
       remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
         IFS= read -r BAO_TOKEN
         export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
@@ -1381,7 +1160,7 @@ print(data.get('data', {}).get('data', {}).get('username', ''))
   existing_ts="$(bao_kv_get secret/platform/tailscale)" || existing_ts=""
   if [ -z "${existing_ts}" ] && [ -n "${ts_authkey}" ]; then
     echo "  Writing secret/platform/tailscale..." >&2
-    printf '%s\n%s\n' "${BAO_ROOT_TOKEN}" "${ts_authkey}" | \
+    printf '%s\n%s\n' "${BAO_WRITE_TOKEN}" "${ts_authkey}" | \
       remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
         IFS= read -r BAO_TOKEN
         export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
@@ -1402,7 +1181,7 @@ print(data.get('data', {}).get('data', {}).get('username', ''))
     fi
     if [ "${has_notif}" = "true" ]; then
       echo "  Writing secret/platform/notifications..." >&2
-      printf '%s\n%s\n%s\n' "${BAO_ROOT_TOKEN}" "${ntfy_url}" "${healthchecks_url}" | \
+      printf '%s\n%s\n%s\n' "${BAO_WRITE_TOKEN}" "${ntfy_url}" "${healthchecks_url}" | \
         remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
           IFS= read -r BAO_TOKEN
           export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
@@ -1545,10 +1324,8 @@ print(data.get('data', {}).get('data', {}).get('email', ''))
             echo "ERROR: ${app_path} exists with username '${existing_app_uname}'," >&2
             echo "  which is neither the canonical app account ('${app_username}')" >&2
             echo "  nor a known legacy value. This looks like a deliberate change," >&2
-            echo "  so it is not overwritten. Resolve by hand (purge + reseed):" >&2
-            echo "    sudo kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml -n openbao \\" >&2
-            echo "      exec openbao-0 -- bao kv metadata delete '${app_path}'  # needs a bao token" >&2
-            echo "  then rerun seed-bao." >&2
+            echo "  so it is not overwritten. No later step can seed again, because nothing" >&2
+            echo "  after the install makes a root token: rebuild the environment." >&2
             exit 1
             ;;
         esac
@@ -1563,7 +1340,8 @@ print(data.get('data', {}).get('data', {}).get('email', ''))
             echo "  which is neither the canonical app email ('${app_email}')" >&2
             echo "  nor a known legacy value (empty, operator email, admin@example.com)." >&2
             echo "  This looks like a deliberate change, so it is not overwritten." >&2
-            echo "  Resolve by hand (purge + reseed)." >&2
+            echo "  No later step can seed again, because nothing after the install makes" >&2
+            echo "  a root token: rebuild the environment." >&2
             exit 1
             ;;
         esac
@@ -1571,7 +1349,7 @@ print(data.get('data', {}).get('data', {}).get('email', ''))
     fi
     # Write (new path) or overwrite (sanctioned operator-identity migration).
     echo "  Writing ${app_path} (username=${app_username})..." >&2
-    printf '%s\n%s\n%s\n%s\n' "${BAO_ROOT_TOKEN}" "${app_username}" "${app_email}" "${admin_password}" | \
+    printf '%s\n%s\n%s\n%s\n' "${BAO_WRITE_TOKEN}" "${app_username}" "${app_email}" "${admin_password}" | \
       remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
         IFS= read -r BAO_TOKEN
         export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
@@ -1595,9 +1373,10 @@ print(data.get('data', {}).get('data', {}).get('email', ''))
   # apps.zot.service_password (generated at `init`). It MUST live in the bundle
   # (not just OpenBao) because export-vars reads it from there to feed the Zot
   # htpasswd at pre-seed Layer 3, before OpenBao exists. Bundles predating
-  # ADR-0033 lack it; generate + write it back here so existing envs migrate by
-  # just re-running seed-bao (per ADR-0033 Consequences), then we copy the same
-  # value into OpenBao at secret/apps/zot/service for ESO/zot-mirror to mount.
+  # ADR-0033 lack it; generate + write it back here, then copy the same value
+  # into OpenBao at secret/apps/zot/service for ESO/zot-mirror to mount. This runs
+  # at install time, so an existing environment that lacks the value rebuilds
+  # (ADR-0051).
   local zot_service_password
   zot_service_password="$(bundle_field "${env_name}" apps.zot.service_password 2>/dev/null)" || zot_service_password=""
   if [ -z "${zot_service_password}" ]; then
@@ -1623,15 +1402,13 @@ print(data.get('data', {}).get('data', {}).get('username', ''))
       # Fail closed: a non-zot-svc username here is an unexpected, possibly
       # deliberate state — never silently overwrite it (mirrors the admin loop).
       echo "ERROR: ${zot_svc_path} exists with username '${existing_zot_svc_uname}'," >&2
-      echo "  not the expected 'zot-svc'. Not overwriting. Resolve by hand:" >&2
-      echo "    sudo kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml -n openbao \\" >&2
-      echo "      exec ${BAO_POD} -- bao kv metadata delete '${zot_svc_path}'  # needs a bao token" >&2
-      echo "  then rerun seed-bao." >&2
+      echo "  not the expected 'zot-svc'. Not overwriting. No later step can seed again," >&2
+      echo "  because nothing after the install makes a root token: rebuild the environment." >&2
       exit 1
     fi
   else
     echo "  Writing ${zot_svc_path} (username=zot-svc)..." >&2
-    printf '%s\n%s\n' "${BAO_ROOT_TOKEN}" "${zot_service_password}" | \
+    printf '%s\n%s\n' "${BAO_WRITE_TOKEN}" "${zot_service_password}" | \
       remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
         IFS= read -r BAO_TOKEN
         export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
@@ -1664,7 +1441,8 @@ print(data.get('data', {}).get('data', {}).get('bearer_token', ''))
       echo "  ${awx_autoscale_path}: bearer_token present, no-op" >&2
     else
       echo "ERROR: ${awx_autoscale_path} exists but bearer_token is empty/missing." >&2
-      echo "  Resolve by hand, then rerun seed-bao." >&2
+      echo "  No later step can seed again, because nothing after the install makes a" >&2
+      echo "  root token: rebuild the environment." >&2
       exit 1
     fi
   else
@@ -1683,7 +1461,8 @@ print(data.get('data', {}).get('data', {}).get('bearer_token', ''))
       echo "ERROR: ${awx_autoscale_path} read empty AND the sentinel" >&2
       echo "  secret/platform/bootstrap_admin is also unreadable — OpenBao reads" >&2
       echo "  appear broken. Refusing to (re)generate the bearer token (it would" >&2
-      echo "  rotate under a live dmf-cms). Fix OpenBao access, then rerun seed-bao." >&2
+      echo "  rotate under a live dmf-cms). Rebuild the environment:" >&2
+      echo "  no later step can seed again, because nothing after the install makes a root token." >&2
       exit 1
     fi
     local reread_awx_autoscale_bearer
@@ -1700,7 +1479,7 @@ except Exception:
       local bearer
       bearer="$(gen_secret 48 64)"
       echo "  Writing ${awx_autoscale_path} (bearer_token)..." >&2
-      printf '%s\n%s\n' "${BAO_ROOT_TOKEN}" "${bearer}" | \
+      printf '%s\n%s\n' "${BAO_WRITE_TOKEN}" "${bearer}" | \
         remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
           IFS= read -r BAO_TOKEN
           export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
@@ -1736,7 +1515,7 @@ except Exception:
       echo "  ${os_path}: already exists, skipping" >&2
     else
       echo "  Writing ${os_path}..." >&2
-      printf '%s\n%s\n%s\n%s\n%s\n%s\n' "${BAO_ROOT_TOKEN}" "${os_bucket}" "${os_endpoint}" "${os_region}" "${os_access_key}" "${os_secret_key}" | \
+      printf '%s\n%s\n%s\n%s\n%s\n%s\n' "${BAO_WRITE_TOKEN}" "${os_bucket}" "${os_endpoint}" "${os_region}" "${os_access_key}" "${os_secret_key}" | \
         remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
           IFS= read -r BAO_TOKEN
           export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
@@ -1843,11 +1622,8 @@ print('sealed' if data.get('sealed', True) else 'unsealed')
     exit 1
   fi
 
-  # Acquire one-shot root token via Shamir share quorum (same pattern as
-  # cmd_seed_bao). Strictly speaking secret/apps/awx/control_node_ssh is
-  # within ops-admin's app-admin-writer policy scope, but using the temp
-  # root keeps both seed paths consistent and avoids a second auth flow.
-  take_write_token "${env_name}"
+  # The installer's token arrives on stdin, as for seed-bao.
+  read_installer_token
 
   # Check for existing value — idempotent
   local existing
@@ -1887,7 +1663,7 @@ if key:
 
   echo "Writing secret/apps/awx/control_node_ssh..." >&2
   # Token first line, then the multi-line SSH key (read until EOF).
-  { printf '%s\n' "${BAO_ROOT_TOKEN}"; printf '%s' "${ssh_key_data}"; } | \
+  { printf '%s\n' "${BAO_WRITE_TOKEN}"; printf '%s' "${ssh_key_data}"; } | \
     remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
       IFS= read -r BAO_TOKEN
       export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
@@ -1901,26 +1677,15 @@ if key:
   echo "seed-awx-control-node-ssh complete for ${env_name}" >&2
 }
 
-# seed-install ENV — the seed step of the install. Reads the installer's token from the
-# first line of stdin and seeds OpenBao from the bundle. It does not seed the AWX
-# control-node key: the awx-integration role of dmf-infra writes that key during the
-# install, from the path the wizard set. The openbao role of dmf-infra pipes its write
-# token to this command just before it revokes the token, and bin/run-playbook.sh names
-# the command for the playbooks that run the install. The seed runs in a subshell, so an
-# `exit` inside it ends the seed only. The token stays out of every argument and is never
-# revoked here: the installer owns it.
+# seed-install ENV — the seed step of the install. Reads the installer's token from stdin
+# once and seeds OpenBao from the bundle. It does not seed the AWX control-node key: the
+# awx-integration role of dmf-infra writes that key during the install, from the path the
+# wizard set. The seed runs in a subshell, so an `exit` inside it ends the seed only, and
+# the token stays out of every argument.
 cmd_seed_install() {
   require_env_name "${1:-}"
   local env_name="$1"
-  if [ -t 0 ]; then
-    echo "ERROR: seed-install reads the installer's token from stdin. The openbao role of the install pipes it." >&2
-    exit 1
-  fi
-  IFS= read -r BAO_INSTALL_TOKEN || true
-  if [ -z "${BAO_INSTALL_TOKEN}" ]; then
-    echo "ERROR: stdin holds no token. seed-install reads the installer's token from the first line." >&2
-    exit 1
-  fi
+  read_installer_token
   ( cmd_seed_bao "${env_name}" ) || return $?
 }
 
@@ -2121,8 +1886,8 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
       echo "  init <env>                      Create or update encrypted bundle" >&2
       echo "  doctor <env>                    Validate bundle and prerequisites" >&2
       echo "  export-vars <env> <json-out>    Decrypt bundle to Ansible vars JSON" >&2
-      echo "  seed-bao <env>                  Seed platform + admin paths into OpenBao" >&2
-      echo "  seed-awx-control-node-ssh <env> Seed AWX SSH privkey into OpenBao" >&2
+      echo "  seed-bao <env>                  Seed platform + admin paths into OpenBao (token on stdin)" >&2
+      echo "  seed-awx-control-node-ssh <env> Seed AWX SSH privkey into OpenBao (token on stdin)" >&2
       echo "  seed-install <env>              Seed OpenBao as the install runs it (token on stdin)" >&2
       echo "  status <env>                    Report bundle/seed metadata" >&2
       echo "  rotate <env> <field>            Regenerate a specific field" >&2

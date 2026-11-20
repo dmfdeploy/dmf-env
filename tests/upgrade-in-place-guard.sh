@@ -7,8 +7,9 @@
 # so no playbook runs. The real upgrade-in-place.sh and unseal-openbao.sh run.
 #
 # Cases:
-#   A  one pod, unsealed → exit 0; the guard playbook runs first, then the stages
-#   B  three pods, one sealed → exit 2 before any playbook or seed-bao step
+#   A  one pod, unsealed → exit 0; the guard playbook runs first, then the stages in order,
+#      and no seed runs (the wrapper seeds nothing: the install does)
+#   B  three pods, one sealed → exit 2 before any playbook
 #   C  three pods unsealed, the guard refuses → exit 2, only the guard ran
 #   D  --skip-unseal-check skips only the stage 1 seal check: the guard still runs, and
 #      a refusing guard still stops the run before any other step
@@ -123,11 +124,15 @@ run_case "openbao-0" "" 0
 [ "$RC" -eq 0 ] && pass "exit 0" || fail "exit $RC: $OUT"
 [ "$(logged | head -1)" = "102-openbao-ha-guard.yml" ] && pass "guard ran first" || fail "order: $(logged | tr '\n' ' ')"
 logged | grep -q "bootstrap-provision-pre-seed.yml" && pass "stages ran after the guard" || fail "no stage ran"
+EXPECTED="102-openbao-ha-guard.yml bootstrap-provision-pre-seed.yml bootstrap-provision-post-seed.yml bootstrap-configure.yml verify-bootstrap-convergence.yml bootstrap-verify.yml"
+[ "$(logged | tr '\n' ' ' | sed 's/ $//')" = "$EXPECTED" ] && pass "the stages ran in order, with nothing else" || fail "ran: $(logged | tr '\n' ' ')"
+logged | grep -q "seed-bao" && fail "seed-bao ran" || pass "no seed ran"
+printf '%s' "$OUT" | grep -q "Stage 5: Convergence gates" && pass "five stages, numbered in order" || fail "stage numbers: $OUT"
 
 echo "[B] three pods, openbao-1 sealed"
 run_case "openbao-0 openbao-1 openbao-2" "openbao-1" 0
 [ "$RC" -eq 2 ] && pass "exit 2" || fail "exit $RC"
-[ -z "$(logged)" ] && pass "no playbook and no seed-bao ran" || fail "ran: $(logged | tr '\n' ' ')"
+[ -z "$(logged)" ] && pass "no playbook ran" || fail "ran: $(logged | tr '\n' ' ')"
 printf '%s' "$OUT" | grep -q "openbao-1: sealed" && pass "names the sealed pod" || fail "sealed pod not named"
 
 echo "[C] three pods unsealed, guard refuses"
@@ -153,7 +158,8 @@ echo "[H] the playbook set follows the env's lane, and an unreadable lane stops 
 MAIN_YML="${GROUP_VARS_DIR}/main.yml"
 EXPECT_CLOUD="102-openbao-ha-guard.yml bootstrap-provision-pre-seed.yml bootstrap-provision-post-seed.yml bootstrap-configure.yml verify-bootstrap-convergence.yml bootstrap-verify.yml"
 EXPECT_SANDBOX="102-openbao-ha-guard.yml bootstrap-sandbox-provision-pre-seed.yml bootstrap-sandbox-provision-post-seed.yml bootstrap-sandbox-configure.yml bootstrap-sandbox-verify.yml"
-ran() { logged | grep -v '^seed-bao$' | tr '\n' ' ' | sed 's/ $//'; }
+# Nothing is filtered out: a seed call in either lane shows up as an extra entry and fails the case.
+ran() { logged | tr '\n' ' ' | sed 's/ $//'; }
 
 # lane_case <label> <expected playbooks> <main.yml line>
 lane_case() {
