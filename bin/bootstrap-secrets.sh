@@ -7,7 +7,7 @@
 #   export-vars <env> <json-out>  — decrypt bundle to Ansible vars JSON
 #   seed-bao <env>                — seed platform + admin paths into OpenBao
 #   seed-awx-control-node-ssh <env> — seed AWX SSH privkey into OpenBao
-#   seed-install <env>            — the seed step of the install: both seeds, with the
+#   seed-install <env>            — the seed step of the install: seed-bao, with the
 #                                   installer's token read from stdin
 #   status <env>                  — report bundle/seed metadata only
 #   rotate <env> <field>          — regenerate a specific field (optional)
@@ -1902,12 +1902,13 @@ if key:
 }
 
 # seed-install ENV — the seed step of the install. Reads the installer's token from the
-# first line of stdin, seeds OpenBao from the bundle, and seeds the AWX control-node key
-# when DMF_AWX_CONTROL_NODE_SSH_PATH names one. The openbao role of dmf-infra pipes its
-# write token to this command just before it revokes the token, and bin/run-playbook.sh
-# names the command for the playbooks that run the install. Each seed runs in a subshell,
-# so an `exit` inside it ends that seed only. The token stays out of every argument and
-# is never revoked here: the installer owns it.
+# first line of stdin and seeds OpenBao from the bundle. It does not seed the AWX
+# control-node key: the awx-integration role of dmf-infra writes that key during the
+# install, from the path the wizard set. The openbao role of dmf-infra pipes its write
+# token to this command just before it revokes the token, and bin/run-playbook.sh names
+# the command for the playbooks that run the install. The seed runs in a subshell, so an
+# `exit` inside it ends the seed only. The token stays out of every argument and is never
+# revoked here: the installer owns it.
 cmd_seed_install() {
   require_env_name "${1:-}"
   local env_name="$1"
@@ -1921,11 +1922,6 @@ cmd_seed_install() {
     exit 1
   fi
   ( cmd_seed_bao "${env_name}" ) || return $?
-  if [ -n "${DMF_AWX_CONTROL_NODE_SSH_PATH:-}" ]; then
-    ( cmd_seed_awx_ssh "${env_name}" ) || return $?
-  else
-    echo "seed-install: DMF_AWX_CONTROL_NODE_SSH_PATH is not set, so the AWX control-node key is not seeded." >&2
-  fi
 }
 
 cmd_status() {
@@ -2127,7 +2123,7 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
       echo "  export-vars <env> <json-out>    Decrypt bundle to Ansible vars JSON" >&2
       echo "  seed-bao <env>                  Seed platform + admin paths into OpenBao" >&2
       echo "  seed-awx-control-node-ssh <env> Seed AWX SSH privkey into OpenBao" >&2
-      echo "  seed-install <env>              Both seeds, as the install runs them (token on stdin)" >&2
+      echo "  seed-install <env>              Seed OpenBao as the install runs it (token on stdin)" >&2
       echo "  status <env>                    Report bundle/seed metadata" >&2
       echo "  rotate <env> <field>            Regenerate a specific field" >&2
       echo "  set-base-domain <env> <domain>  Set metadata.base_domain for migration" >&2
