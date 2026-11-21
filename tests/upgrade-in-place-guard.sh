@@ -15,6 +15,8 @@
 #   G  no flag skips the guard (--skip-unseal-check, --dry-run, --yes)
 #   E  --status-all exit codes: 0 all unsealed, 6 one sealed, 4 no pod
 #   F  --status-all reports each pod on its own line
+#   H  the playbook set follows the env's lane: a sandbox env (dmf_provider: sandbox)
+#      runs the bootstrap-sandbox-* playbooks, any other env the cloud playbooks
 
 set -euo pipefail
 
@@ -143,6 +145,19 @@ for flag in --skip-unseal-check --dry-run --yes; do
   run_case "openbao-0" "" 0 "$flag"
   logged | grep -q "102-openbao-ha-guard.yml" && pass "guard ran with $flag" || fail "guard did not run with $flag"
 done
+
+echo "[H] the playbook set follows the env's lane"
+EXPECT_CLOUD="102-openbao-ha-guard.yml bootstrap-provision-pre-seed.yml bootstrap-provision-post-seed.yml bootstrap-configure.yml verify-bootstrap-convergence.yml bootstrap-verify.yml"
+EXPECT_SANDBOX="102-openbao-ha-guard.yml bootstrap-sandbox-provision-pre-seed.yml bootstrap-sandbox-provision-post-seed.yml bootstrap-sandbox-configure.yml verify-bootstrap-convergence.yml bootstrap-sandbox-verify.yml"
+run_case "openbao-0" "" 0
+[ "$(logged | grep -v '^seed-bao$' | tr '\n' ' ' | sed 's/ $//')" = "$EXPECT_CLOUD" ] && pass "no dmf_provider: cloud playbooks" || fail "ran: $(logged | tr '\n' ' ')"
+printf 'openbao_key_path: /tmp/openbao/breakglass\ndmf_provider: "hetzner"\n' > "${GROUP_VARS_DIR}/main.yml"
+run_case "openbao-0" "" 0
+[ "$(logged | grep -v '^seed-bao$' | tr '\n' ' ' | sed 's/ $//')" = "$EXPECT_CLOUD" ] && pass "dmf_provider hetzner: cloud playbooks" || fail "ran: $(logged | tr '\n' ' ')"
+printf 'openbao_key_path: /tmp/openbao/breakglass\ndmf_provider: "sandbox"          # generic SSH host\n' > "${GROUP_VARS_DIR}/main.yml"
+run_case "openbao-0" "" 0
+[ "$RC" -eq 0 ] && pass "sandbox exit 0" || fail "sandbox exit $RC: $OUT"
+[ "$(logged | grep -v '^seed-bao$' | tr '\n' ' ' | sed 's/ $//')" = "$EXPECT_SANDBOX" ] && pass "dmf_provider sandbox: sandbox playbooks" || fail "ran: $(logged | tr '\n' ' ')"
 
 echo "[E] --status-all exit codes"
 export FAKE_PODS="openbao-0 openbao-1 openbao-2" FAKE_SEALED=""
