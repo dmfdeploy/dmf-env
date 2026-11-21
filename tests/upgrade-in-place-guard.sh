@@ -175,6 +175,10 @@ lane_case "double-quoted hetzner" "$EXPECT_CLOUD" 'dmf_provider: "hetzner"'
 lane_case "unquoted hetzner" "$EXPECT_CLOUD" 'dmf_provider: hetzner'
 lane_case "double-quoted sandbox" "$EXPECT_SANDBOX" 'dmf_provider: "sandbox"'
 lane_case "unquoted sandbox" "$EXPECT_SANDBOX" 'dmf_provider: sandbox'
+# The sandbox main.yml as the wizard writes it, comment after the value included.
+cp "${REPO_DIR}/tests/fixtures/sandbox-main.yml.golden" "$MAIN_YML"
+run_case "openbao-0" "" 0
+[ "$RC" -eq 0 ] && [ "$(ran)" = "$EXPECT_SANDBOX" ] && pass "wizard-generated sandbox main.yml" || fail "wizard-generated sandbox main.yml: rc=$RC ran: $(ran) out: $OUT"
 lane_case "sandbox (single quotes)" "$EXPECT_SANDBOX" "dmf_provider: 'sandbox'"
 
 printf 'openbao_key_path: /tmp/openbao/breakglass\n' > "$MAIN_YML"
