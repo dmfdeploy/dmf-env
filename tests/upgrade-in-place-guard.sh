@@ -16,7 +16,9 @@
 #   E  --status-all exit codes: 0 all unsealed, 6 one sealed, 4 no pod
 #   F  --status-all reports each pod on its own line
 #   H  the playbook set follows the env's lane: a sandbox env (dmf_provider: sandbox)
-#      runs the bootstrap-sandbox-* playbooks, any other env the cloud playbooks
+#      runs the bootstrap-sandbox-* playbooks (convergence runs inside the sandbox
+#      verify), a hetzner env the cloud playbooks; a missing file, a missing, empty,
+#      indented or unknown dmf_provider stops the run before any playbook
 
 set -euo pipefail
 
@@ -52,6 +54,7 @@ control-1 ansible_host=127.0.0.1 ansible_user=lima
 EOF
 cat > "${GROUP_VARS_DIR}/main.yml" <<'EOF'
 openbao_key_path: /tmp/openbao/breakglass
+dmf_provider: "hetzner"
 EOF
 touch "${ENV_ROOT}/bundle.sops.yaml"
 
@@ -146,18 +149,45 @@ for flag in --skip-unseal-check --dry-run --yes; do
   logged | grep -q "102-openbao-ha-guard.yml" && pass "guard ran with $flag" || fail "guard did not run with $flag"
 done
 
-echo "[H] the playbook set follows the env's lane"
+echo "[H] the playbook set follows the env's lane, and an unreadable lane stops the run"
+MAIN_YML="${GROUP_VARS_DIR}/main.yml"
 EXPECT_CLOUD="102-openbao-ha-guard.yml bootstrap-provision-pre-seed.yml bootstrap-provision-post-seed.yml bootstrap-configure.yml verify-bootstrap-convergence.yml bootstrap-verify.yml"
-EXPECT_SANDBOX="102-openbao-ha-guard.yml bootstrap-sandbox-provision-pre-seed.yml bootstrap-sandbox-provision-post-seed.yml bootstrap-sandbox-configure.yml verify-bootstrap-convergence.yml bootstrap-sandbox-verify.yml"
-run_case "openbao-0" "" 0
-[ "$(logged | grep -v '^seed-bao$' | tr '\n' ' ' | sed 's/ $//')" = "$EXPECT_CLOUD" ] && pass "no dmf_provider: cloud playbooks" || fail "ran: $(logged | tr '\n' ' ')"
-printf 'openbao_key_path: /tmp/openbao/breakglass\ndmf_provider: "hetzner"\n' > "${GROUP_VARS_DIR}/main.yml"
-run_case "openbao-0" "" 0
-[ "$(logged | grep -v '^seed-bao$' | tr '\n' ' ' | sed 's/ $//')" = "$EXPECT_CLOUD" ] && pass "dmf_provider hetzner: cloud playbooks" || fail "ran: $(logged | tr '\n' ' ')"
-printf 'openbao_key_path: /tmp/openbao/breakglass\ndmf_provider: "sandbox"          # generic SSH host\n' > "${GROUP_VARS_DIR}/main.yml"
-run_case "openbao-0" "" 0
-[ "$RC" -eq 0 ] && pass "sandbox exit 0" || fail "sandbox exit $RC: $OUT"
-[ "$(logged | grep -v '^seed-bao$' | tr '\n' ' ' | sed 's/ $//')" = "$EXPECT_SANDBOX" ] && pass "dmf_provider sandbox: sandbox playbooks" || fail "ran: $(logged | tr '\n' ' ')"
+EXPECT_SANDBOX="102-openbao-ha-guard.yml bootstrap-sandbox-provision-pre-seed.yml bootstrap-sandbox-provision-post-seed.yml bootstrap-sandbox-configure.yml bootstrap-sandbox-verify.yml"
+ran() { logged | grep -v '^seed-bao$' | tr '\n' ' ' | sed 's/ $//'; }
+
+# lane_case <label> <expected playbooks> <main.yml line>
+lane_case() {
+  printf 'openbao_key_path: /tmp/openbao/breakglass\n%s\n' "$3" > "$MAIN_YML"
+  run_case "openbao-0" "" 0
+  [ "$RC" -eq 0 ] && [ "$(ran)" = "$2" ] && pass "$1" || fail "$1: rc=$RC ran: $(ran)"
+}
+# refuse_case <label> — the main.yml is already in place.
+refuse_case() {
+  run_case "openbao-0" "" 0
+  if [ "$RC" -eq 1 ] && [ -z "$(logged)" ] && printf '%s' "$OUT" | grep -q "dmf_provider" && printf '%s' "$OUT" | grep -q "main.yml"; then
+    pass "$1: exit 1, no playbook ran, message names the key and the file"
+  else
+    fail "$1: rc=$RC ran: $(logged | tr '\n' ' ') out: $OUT"
+  fi
+}
+
+lane_case "double-quoted hetzner" "$EXPECT_CLOUD" 'dmf_provider: "hetzner"'
+lane_case "unquoted hetzner" "$EXPECT_CLOUD" 'dmf_provider: hetzner'
+lane_case "double-quoted sandbox" "$EXPECT_SANDBOX" 'dmf_provider: "sandbox"'
+lane_case "unquoted sandbox" "$EXPECT_SANDBOX" 'dmf_provider: sandbox'
+lane_case "sandbox (single quotes)" "$EXPECT_SANDBOX" "dmf_provider: 'sandbox'"
+
+printf 'openbao_key_path: /tmp/openbao/breakglass\n' > "$MAIN_YML"
+refuse_case "key missing"
+printf 'openbao_key_path: /tmp/openbao/breakglass\ndmf_provider:\n' > "$MAIN_YML"
+refuse_case "empty value"
+printf 'openbao_key_path: /tmp/openbao/breakglass\ndmf_provider: aws\n' > "$MAIN_YML"
+refuse_case "unknown value"
+printf 'openbao_key_path: /tmp/openbao/breakglass\nnested:\n  dmf_provider: sandbox\n' > "$MAIN_YML"
+refuse_case "leading-indented key"
+rm -f "$MAIN_YML"
+refuse_case "inventory file missing"
+printf 'openbao_key_path: /tmp/openbao/breakglass\ndmf_provider: "hetzner"\n' > "$MAIN_YML"
 
 echo "[E] --status-all exit codes"
 export FAKE_PODS="openbao-0 openbao-1 openbao-2" FAKE_SEALED=""

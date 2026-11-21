@@ -27,6 +27,8 @@ cd "$REPO_DIR"
 
 # shellcheck source=lib/_resolve_env_paths.sh
 . "$SCRIPT_DIR/lib/_resolve_env_paths.sh"
+# shellcheck source=lib/_inventory_var.sh
+. "$SCRIPT_DIR/lib/_inventory_var.sh"
 
 dmf_source_operator_config
 dmf_resolve_env_paths "$1" || {
@@ -57,23 +59,6 @@ apply_uses_saved_plan() {
     esac
   done
   return 1
-}
-
-inventory_var() {
-  local key="$1"
-  local f="${DMF_ENV_INVENTORY_DIR}/group_vars/all/main.yml"
-  [ -f "$f" ] || return 1
-  awk -v key="$key" '
-    $0 ~ "^[[:space:]]*" key ":[[:space:]]*" {
-      sub("^[[:space:]]*" key ":[[:space:]]*", "", $0)
-      gsub(/^"/, "", $0)
-      gsub(/"$/, "", $0)
-      gsub(/^'\''/, "", $0)
-      gsub(/'\''$/, "", $0)
-      print
-      exit
-    }
-  ' "$f"
 }
 
 # Determine provider from manifest or inventory fallback

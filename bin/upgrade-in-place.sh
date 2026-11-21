@@ -11,7 +11,8 @@
 #   Stage 6 — convergence gates — verify all apps running, cluster converged
 #
 # A sandbox-lane env (dmf_provider: sandbox) runs the bootstrap-sandbox-* variants of
-# stages 3-5 and of the final verify playbook, the ones it was installed with.
+# stages 3-5 and of the final verify playbook, the ones it was installed with. The
+# run stops before any stage when dmf_provider is missing or not sandbox/hetzner.
 #
 # This wrapper is IDEMPOTENT: safe to re-run on an already-upgraded env.
 # A second run should complete with "converged to current main; clean no-op"
@@ -56,6 +57,8 @@ REPO_DIR="$(dirname "$SCRIPT_DIR")"
 # Source the environment resolver
 # shellcheck source=lib/_resolve_env_paths.sh
 . "$SCRIPT_DIR/lib/_resolve_env_paths.sh"
+# shellcheck source=lib/_inventory_var.sh
+. "$SCRIPT_DIR/lib/_inventory_var.sh"
 dmf_source_operator_config
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -112,6 +115,30 @@ done
 # ─────────────────────────────────────────────────────────────────────────────
 # Upgrade sequence
 # ─────────────────────────────────────────────────────────────────────────────
+
+# The lane decides which playbooks run. Stop before any stage when the env's
+# provider can't be read, so a sandbox env is never upgraded with cloud playbooks.
+INVENTORY_MAIN="${DMF_ENV_INVENTORY_DIR}/group_vars/all/main.yml"
+DMF_PROVIDER="$(inventory_var dmf_provider || true)"
+# The wizard writes the key at column zero. inventory_var also reads an indented
+# key, which can belong to a nested map, so require the top-level line as well.
+if ! grep -qE '^dmf_provider:' "$INVENTORY_MAIN" 2>/dev/null; then
+  DMF_PROVIDER=""
+fi
+case "$DMF_PROVIDER" in
+  sandbox | hetzner) ;;
+  *)
+    err "cannot tell which lane $ENV_NAME was installed with"
+    err "  expected a line 'dmf_provider: sandbox' or 'dmf_provider: hetzner' in $INVENTORY_MAIN"
+    if [ ! -f "$INVENTORY_MAIN" ]; then
+      err "  the file does not exist"
+    else
+      err "  found: '${DMF_PROVIDER}' (empty means the key is missing or has no value)"
+    fi
+    err "an environment created before this key existed is rebuilt, not upgraded"
+    exit 1
+    ;;
+esac
 
 section "Upgrade: $ENV_NAME"
 info "Current state will be validated and upgraded to current main"
@@ -205,23 +232,17 @@ fi
 # Stages 3–5: Run the upgrade stages (pre-seed, post-seed, configure)
 # ─────────────────────────────────────────────────────────────────────────────
 
-# A sandbox-lane env was installed with the bootstrap-sandbox-* playbooks, and
-# the cloud playbooks assert inputs a sandbox env does not have. Read the lane
-# from the same inventory variable the wizard writes and tf-apply.sh reads.
-INVENTORY_MAIN="${DMF_ENV_INVENTORY_DIR}/group_vars/all/main.yml"
-DMF_PROVIDER=""
-if [ -f "$INVENTORY_MAIN" ]; then
-  DMF_PROVIDER="$(sed -nE 's/^dmf_provider:[[:space:]]*["'\'']?([^"'\''#[:space:]]*).*/\1/p' "$INVENTORY_MAIN" | head -1)"
-fi
-
 if [ "$DMF_PROVIDER" = "sandbox" ]; then
+  RUN_CONVERGENCE_GATE=0
   STAGES=(
     "bootstrap-sandbox-provision-pre-seed.yml"
     "bootstrap-sandbox-provision-post-seed.yml"
     "bootstrap-sandbox-configure.yml"
   )
+  # bootstrap-sandbox-verify.yml already imports the convergence playbook.
   VERIFY_PLAYBOOK="bootstrap-sandbox-verify.yml"
 else
+  RUN_CONVERGENCE_GATE=1
   STAGES=(
     "bootstrap-provision-pre-seed.yml"
     "bootstrap-provision-post-seed.yml"
@@ -251,15 +272,17 @@ done
 
 section "Stage 6: Convergence gates"
 
-info "Running verify-bootstrap-convergence.yml..."
-EXTRA_ARGS=""
-if [ "$DRY_RUN" -eq 1 ]; then
-  EXTRA_ARGS="--check --diff"
-  info "[dry-run] running with --check --diff"
-fi
-if ! "$SCRIPT_DIR/run-playbook.sh" "$ENV_NAME" "../dmf-infra/k3s-lab-bootstrap/playbooks/verify-bootstrap-convergence.yml" $EXTRA_ARGS; then
-  err "convergence gate failed"
-  exit 5
+if [ "$RUN_CONVERGENCE_GATE" -eq 1 ]; then
+  info "Running verify-bootstrap-convergence.yml..."
+  EXTRA_ARGS=""
+  if [ "$DRY_RUN" -eq 1 ]; then
+    EXTRA_ARGS="--check --diff"
+    info "[dry-run] running with --check --diff"
+  fi
+  if ! "$SCRIPT_DIR/run-playbook.sh" "$ENV_NAME" "../dmf-infra/k3s-lab-bootstrap/playbooks/verify-bootstrap-convergence.yml" $EXTRA_ARGS; then
+    err "convergence gate failed"
+    exit 5
+  fi
 fi
 
 info "Running $VERIFY_PLAYBOOK..."
