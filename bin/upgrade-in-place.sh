@@ -10,6 +10,9 @@
 #   Stage 5 — configure        — final customization
 #   Stage 6 — convergence gates — verify all apps running, cluster converged
 #
+# A sandbox-lane env (dmf_provider: sandbox) runs the bootstrap-sandbox-* variants of
+# stages 3-5 and of the final verify playbook, the ones it was installed with.
+#
 # This wrapper is IDEMPOTENT: safe to re-run on an already-upgraded env.
 # A second run should complete with "converged to current main; clean no-op"
 # if nothing changed. It targets an EXISTING env with OpenBao already initialized
@@ -202,11 +205,30 @@ fi
 # Stages 3–5: Run the upgrade stages (pre-seed, post-seed, configure)
 # ─────────────────────────────────────────────────────────────────────────────
 
-STAGES=(
-  "bootstrap-provision-pre-seed.yml"
-  "bootstrap-provision-post-seed.yml"
-  "bootstrap-configure.yml"
-)
+# A sandbox-lane env was installed with the bootstrap-sandbox-* playbooks, and
+# the cloud playbooks assert inputs a sandbox env does not have. Read the lane
+# from the same inventory variable the wizard writes and tf-apply.sh reads.
+INVENTORY_MAIN="${DMF_ENV_INVENTORY_DIR}/group_vars/all/main.yml"
+DMF_PROVIDER=""
+if [ -f "$INVENTORY_MAIN" ]; then
+  DMF_PROVIDER="$(sed -nE 's/^dmf_provider:[[:space:]]*["'\'']?([^"'\''#[:space:]]*).*/\1/p' "$INVENTORY_MAIN" | head -1)"
+fi
+
+if [ "$DMF_PROVIDER" = "sandbox" ]; then
+  STAGES=(
+    "bootstrap-sandbox-provision-pre-seed.yml"
+    "bootstrap-sandbox-provision-post-seed.yml"
+    "bootstrap-sandbox-configure.yml"
+  )
+  VERIFY_PLAYBOOK="bootstrap-sandbox-verify.yml"
+else
+  STAGES=(
+    "bootstrap-provision-pre-seed.yml"
+    "bootstrap-provision-post-seed.yml"
+    "bootstrap-configure.yml"
+  )
+  VERIFY_PLAYBOOK="bootstrap-verify.yml"
+fi
 
 STAGE_NUM=3
 for stage in "${STAGES[@]}"; do
@@ -240,13 +262,13 @@ if ! "$SCRIPT_DIR/run-playbook.sh" "$ENV_NAME" "../dmf-infra/k3s-lab-bootstrap/p
   exit 5
 fi
 
-info "Running bootstrap-verify.yml..."
+info "Running $VERIFY_PLAYBOOK..."
 EXTRA_ARGS=""
 if [ "$DRY_RUN" -eq 1 ]; then
   EXTRA_ARGS="--check --diff"
   info "[dry-run] running with --check --diff"
 fi
-if ! "$SCRIPT_DIR/run-playbook.sh" "$ENV_NAME" "../dmf-infra/k3s-lab-bootstrap/bootstrap-verify.yml" $EXTRA_ARGS; then
+if ! "$SCRIPT_DIR/run-playbook.sh" "$ENV_NAME" "../dmf-infra/k3s-lab-bootstrap/$VERIFY_PLAYBOOK" $EXTRA_ARGS; then
   err "bootstrap verification failed"
   exit 6
 fi
