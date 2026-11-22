@@ -1794,8 +1794,13 @@ cmd_rotate() {
       echo "  NOTE: you must also update apps that consumed the old value." >&2
       ;;
     cluster.k3s_token)
-      echo "ERROR: rotating cluster.k3s_token requires node re-join." >&2
-      echo "  This is NOT a bootstrap operation. See lifecycle-operate.yml." >&2
+      echo "ERROR: this command does not rotate cluster.k3s_token, and nothing else in dmfdeploy does." >&2
+      echo "  Rotation is manual. Follow the complete upstream procedure:" >&2
+      echo "  https://docs.k3s.io/cli/token#k3s-token-rotate" >&2
+      echo "  It means restarting every server and agent with the new token." >&2
+      echo "  Keep the old token: you need it to restore snapshots taken before the rotation." >&2
+      echo "  Only after the rotation, update cluster.k3s_token in the bundle and the token field" >&2
+      echo "  at secret/platform/k3s/cluster in OpenBao to the new value." >&2
       exit 1
       ;;
     *)
