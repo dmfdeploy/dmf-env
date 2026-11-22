@@ -149,8 +149,15 @@ See `terraform/README.md` for the OpenTofu (Layer-1) detail.
 ## Playbook runner + monitor
 
 `bin/run-playbook.sh` logs each run to `/tmp/dmf-playbook-logs/<name>-<timestamp>.log`
-and caps runtime (15 min ordinary, 30 min `lifecycle-*`, 90 min `site.yml`);
-override with `RUNBOOK_TIMEOUT=<seconds>`. In a second terminal,
+and caps runtime. The default is 15 minutes (900 seconds). `lifecycle-*`
+playbooks get 30 minutes. `site.yml` and the eight bootstrap stage playbooks get
+120 minutes (7200 seconds). The stage playbooks are the four sandbox and
+non-sandbox pairs: `bootstrap-sandbox-provision-pre-seed.yml`,
+`bootstrap-sandbox-provision-post-seed.yml`, `bootstrap-sandbox-configure.yml`,
+`bootstrap-sandbox-verify.yml`, and the matching `bootstrap-provision-pre-seed.yml`,
+`bootstrap-provision-post-seed.yml`, `bootstrap-configure.yml` and
+`bootstrap-verify.yml`. Other `bootstrap-*` playbooks keep the 15-minute default.
+Override any default with `RUNBOOK_TIMEOUT=<seconds>`. In a second terminal,
 `bin/monitor-playbook.sh <logfile>` streams only PLAY/TASK/fatal/RECAP lines.
 
 ## Secrets the playbooks expect

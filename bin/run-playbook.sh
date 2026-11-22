@@ -158,7 +158,8 @@ materialize_ssh_privkeys
 # - Default cap depends on the target:
 #     * ordinary playbooks:   900s
 #     * lifecycle-*.yml:      1800s
-#     * bootstrap-*.yml:      7200s (the install and upgrade stage playbooks)
+#     * the eight bootstrap stage playbooks (named in the case below): 7200s;
+#       other bootstrap-*.yml playbooks keep the 900s default
 #     * site.yml:             7200s
 # - Output is tee'd: operators still see progress live in the terminal.
 LOG_DIR="/tmp/dmf-playbook-logs"
