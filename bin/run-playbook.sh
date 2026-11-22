@@ -158,6 +158,7 @@ materialize_ssh_privkeys
 # - Default cap depends on the target:
 #     * ordinary playbooks:   900s
 #     * lifecycle-*.yml:      1800s
+#     * bootstrap-*.yml:      7200s (the install and upgrade stage playbooks)
 #     * site.yml:             7200s
 # - Output is tee'd: operators still see progress live in the terminal.
 LOG_DIR="/tmp/dmf-playbook-logs"
@@ -175,6 +176,17 @@ else
       ;;
     lifecycle-*.yml|lifecycle-*.yaml)
       TIMEOUT_SEC=1800
+      ;;
+    # The stage playbooks rerun a whole install stage, so the short cap would kill
+    # a healthy run. One install took 25 minutes for pre-seed and 41 for post-seed,
+    # and 7200s is the cap dmf-init gives the same playbooks.
+    # The names are exact so other bootstrap-* playbooks, such as the short
+    # bootstrap-sandbox-profile.yml, keep the short cap.
+    bootstrap-sandbox-provision-pre-seed.yml|bootstrap-sandbox-provision-post-seed.yml|\
+    bootstrap-sandbox-configure.yml|bootstrap-sandbox-verify.yml|\
+    bootstrap-provision-pre-seed.yml|bootstrap-provision-post-seed.yml|\
+    bootstrap-configure.yml|bootstrap-verify.yml)
+      TIMEOUT_SEC=7200
       ;;
     *)
       TIMEOUT_SEC=900
