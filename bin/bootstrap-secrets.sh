@@ -889,7 +889,7 @@ find_active_bao_pod() {
   fi
   while IFS= read -r pod; do
     [ -n "${pod}" ] || continue
-    status="$(remote_kubectl exec -n openbao "${pod}" -- bao status -format=json 2>/dev/null || true)"
+    status="$(remote_kubectl exec -n openbao "${pod}" -- bao status -format=json 2>/dev/null </dev/null || true)"
     if [ "$(printf '%s' "${status}" | jq -r '.is_self // false' 2>/dev/null)" = "true" ]; then
       active+=("${pod}")
     fi
@@ -952,6 +952,12 @@ cmd_seed_bao() {
   require_env_name "${1:-}"
   local env_name="$1"
 
+  # Read the token before any remote call: ssh reads stdin, and a call made first can
+  # drain the pipe that holds the token. The writes below need a root token (no policy
+  # grants secret/data/platform/* to ops-admin). The installer's initial token arrives
+  # on stdin, and the installer revokes it.
+  read_installer_token
+
   require_sops
   require_age_key
   resolve_env_or_die "$env_name"
@@ -983,11 +989,6 @@ print('sealed' if data.get('sealed', True) else 'unsealed')
   fi
 
   echo "OpenBao is unsealed." >&2
-
-  # The writes below need a root token: no policy grants secret/data/platform/* to
-  # ops-admin. The installer's initial token arrives on stdin, and the installer
-  # revokes it.
-  read_installer_token
 
   # Read values from bundle (never print them)
   local admin_username admin_email admin_password k3s_token base_domain
@@ -1577,6 +1578,10 @@ cmd_seed_awx_ssh() {
   # to move-2 or ADR-0011 triggers.
   require_env_name "${1:-}"
   local env_name="$1"
+
+  # Read the token before any remote call, as seed-bao does.
+  read_installer_token
+
   resolve_env_or_die "$env_name"
 
   # Require the SSH key path env var (fail-closed per A4)
@@ -1621,9 +1626,6 @@ print('sealed' if data.get('sealed', True) else 'unsealed')
     echo "ERROR: OpenBao is sealed. Unseal it first." >&2
     exit 1
   fi
-
-  # The installer's token arrives on stdin, as for seed-bao.
-  read_installer_token
 
   # Check for existing value — idempotent
   local existing
