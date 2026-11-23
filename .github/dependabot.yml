@@ -13,3 +13,7 @@ updates:
       - "no-issue"
     commit-message:
       prefix: "ci(deps)"
+    # Major upgrades are done on purpose, as their own changes.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
