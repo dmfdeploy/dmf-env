@@ -28,6 +28,8 @@ UMBRELLA_DIR="$(dirname "$REPO_DIR")"
 
 # shellcheck source=lib/_resolve_env_paths.sh
 . "$SCRIPT_DIR/lib/_resolve_env_paths.sh"
+# shellcheck source=lib/_env_id.sh
+. "$SCRIPT_DIR/lib/_env_id.sh"
 dmf_source_operator_config
 
 # Sandbox lane writes everything under DMF_DATA_ROOT (default ~/.dmfdeploy).
@@ -319,8 +321,7 @@ lowercase() {
 validate_dns_label() {
     local label="$1"
     [ -n "$label" ] || die "sandbox label is required"
-    [[ "$label" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || die "invalid sandbox label: ${label}"
-    [ "${#label}" -le 63 ] || die "sandbox label must be 63 chars or fewer"
+    dmf_is_env_id "$label" || die "invalid sandbox label: ${label} (lowercase letters, digits, hyphens; start and end alphanumeric; 63 chars or fewer)"
 }
 
 validate_absolute_path() {
@@ -668,7 +669,7 @@ collect_inputs_interactive() {
             if [ -z "$sandbox_label" ]; then
                 break
             fi
-            if [[ "$sandbox_label" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] && [ "${#sandbox_label}" -le 63 ]; then
+            if dmf_is_env_id "$sandbox_label"; then
                 break
             fi
             warn "invalid DNS label '${sandbox_label}' — lowercase letters/digits/hyphens, start+end alphanumeric, ≤63 chars, or empty to auto-derive"

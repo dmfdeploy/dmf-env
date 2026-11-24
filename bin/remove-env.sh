@@ -8,11 +8,15 @@
 #   --check    Dry-run: list what WOULD be removed, exit 0 without changes.
 #   --yes      Skip confirmation prompt (useful for automation).
 #
-# Removes:
-#   1. Cloud resources (via tf-destroy.sh, if cloud + state exists)
-#   2. Hetzner SSH key (${env}-operator, if cloud)
-#   3. Terraform state directory
-#   4. Full environment directory (inventory/manifest/bundle/tfvars/ssh)
+# Sandbox envs only. It reads metadata.provider from the env's manifest and refuses
+# any other env before removing anything or calling a cloud API. Hetzner teardown
+# is manual until dmfdeploy/dmfdeploy#997: delete the servers, network, load
+# balancer and SSH key in the provider console, then remove the env dir.
+#
+# Removes the full environment directory (inventory/manifest/bundle/tfvars/ssh).
+# The wizard never creates <env>/terraform-state for a sandbox, so anything at that path
+# (dir, file, symlink or broken symlink) means the manifest may be wrong: the
+# script refuses before removing anything.
 #
 # All steps are idempotent — re-running is a safe no-op.
 # New-layout only (targets only ~/.dmfdeploy/envs/<env>/, never the repo).
@@ -26,6 +30,10 @@ cd "$REPO_DIR"
 
 # shellcheck source=bin/lib/_resolve_env_paths.sh
 . "$SCRIPT_DIR/lib/_resolve_env_paths.sh"
+# shellcheck source=bin/lib/_manifest_provider.sh
+. "$SCRIPT_DIR/lib/_manifest_provider.sh"
+# shellcheck source=bin/lib/_env_id.sh
+. "$SCRIPT_DIR/lib/_env_id.sh"
 
 DRY_RUN=0
 CONFIRM=1
@@ -34,7 +42,8 @@ ENV_NAME=""
 print_usage() {
   echo "Usage: bin/remove-env.sh [--check] [--yes] <env-id>" >&2
   echo "" >&2
-  echo "Removes cloud resources, state, and environment directory (idempotent)." >&2
+  echo "Removes a sandbox env's directory (idempotent)." >&2
+  echo "Refuses hetzner and unknown envs; tear those down by hand (#997)." >&2
   echo "" >&2
   echo "Options:" >&2
   echo "  --check    Dry-run: list what WOULD be removed, exit 0." >&2
@@ -75,18 +84,26 @@ if [ -z "$ENV_NAME" ]; then
   print_usage
 fi
 
+# Reject a bad id before anything resolves, prompts or is removed: the id
+# becomes a path under envs/.
+dmf_is_env_id "$ENV_NAME" || {
+  echo "ERROR: invalid env id '${ENV_NAME}' (lowercase letters, digits, hyphens; start and end alphanumeric; 63 chars or fewer). Nothing was removed." >&2
+  exit 1
+}
+
 dmf_source_operator_config
 if ! dmf_resolve_env_paths "$ENV_NAME"; then
   # A failed/aborted wizard run can leave a partial, unrecognised env dir
   # (e.g. only ssh/ with no bundle or inventory). Fall back to the new-layout
-  # path so removal can still clean it up (local-only — treated as no-cloud).
+  # path. The provider check below still needs a manifest before it removes
+  # anything.
   fallback="${_DMF_DATA_ROOT}/envs/${ENV_NAME}"
   if [ -d "$fallback" ]; then
     DMF_ENV_ROOT="$fallback"
     DMF_ENV_TF_STATE_DIR="${fallback}/terraform-state"
     DMF_ENV_MANIFEST_FILE="${fallback}/manifest.yaml"
     DMF_ENV_INVENTORY_DIR="${fallback}/inventory"
-    echo "==> NOTE: '$ENV_NAME' is a partial/unrecognised env dir — cleaning local artifacts only." >&2
+    echo "==> NOTE: '$ENV_NAME' is a partial/unrecognised env dir — checking its manifest." >&2
   else
     echo "ERROR: Unable to resolve environment $ENV_NAME" >&2
     print_usage
@@ -99,10 +116,29 @@ if [ -z "${DMF_ENV_ROOT:-}" ] || [ ! -d "${DMF_ENV_ROOT}" ]; then
   exit 1
 fi
 
-# Determine if sandbox or cloud
-is_sandbox() {
-  [ ! -f "${DMF_ENV_MANIFEST_FILE}" ]
-}
+# The env dir must be exactly envs/<id> once symlinks resolve; a symlinked env
+# dir or data root that points elsewhere is refused.
+real_envs="$(cd -P "${_DMF_DATA_ROOT}/envs" 2>/dev/null && pwd -P)" || real_envs=""
+real_root="$(cd -P "${DMF_ENV_ROOT}" 2>/dev/null && pwd -P)" || real_root=""
+if [ -z "$real_envs" ] || [ "$real_root" != "${real_envs}/${ENV_NAME}" ]; then
+  echo "ERROR: refusing rm -rf of unexpected path: '${DMF_ENV_ROOT}' (resolves to '${real_root}', expected '${real_envs}/${ENV_NAME}'). Nothing was removed." >&2
+  exit 1
+fi
+
+# The manifest's metadata.provider gates teardown. Stop before removing anything
+# unless the env is a sandbox; cloud envs are torn down by hand (#997).
+dmf_manifest_provider "${DMF_ENV_MANIFEST_FILE}" || exit 1
+[ "$PROVIDER" = sandbox ] || { dmf_hetzner_teardown_off; exit 1; }
+
+# The wizard never creates terraform state for a sandbox. Anything at the standard path (a
+# dir, a file, a symlink or a broken symlink) means the manifest may be wrong,
+# and that state could be the only record of cloud resources.
+tf_state="${DMF_ENV_ROOT}/terraform-state"
+if [ -e "$tf_state" ] || [ -L "$tf_state" ]; then
+  echo "ERROR: the manifest says sandbox, but ${tf_state} exists. The wizard never creates terraform-state for a sandbox. Nothing was removed." >&2
+  echo "       Look at the env by hand. If it really is a disposable sandbox, remove the env dir yourself." >&2
+  exit 1
+fi
 
 # ─────────────────────────────────────────────────────────────
 # Dry-run mode: list what would be removed
@@ -112,23 +148,6 @@ if [ "$DRY_RUN" -eq 1 ]; then
   echo "==> DRY-RUN: Would remove the following:"
   echo ""
   echo "  Environment root: ${DMF_ENV_ROOT}"
-  echo ""
-
-  if [ -d "${DMF_ENV_TF_STATE_DIR}" ]; then
-    echo "  Terraform state: ${DMF_ENV_TF_STATE_DIR}"
-  else
-    echo "  Terraform state: (not present)"
-  fi
-  echo ""
-
-  if ! is_sandbox; then
-    hcloud_context="$(grep -E '^\s*hcloud_context:' "${DMF_ENV_INVENTORY_DIR}/group_vars/all/main.yml" 2>/dev/null | awk -F': ' '{print $2}' | tr -d ' "'\'''  || true)"
-    if [ -n "$hcloud_context" ]; then
-      echo "  Hetzner SSH key: ${ENV_NAME}-operator (context: $hcloud_context)"
-    else
-      echo "  Hetzner SSH key: ${ENV_NAME}-operator (default context)"
-    fi
-  fi
   echo ""
 
   echo "==> No changes made. To proceed, run without --check."
@@ -149,11 +168,7 @@ if [ "$CONFIRM" -eq 1 ]; then
   echo "==> About to remove environment: $ENV_NAME"
   echo "    Root: ${DMF_ENV_ROOT}"
   echo ""
-  echo "    This will:"
-  echo "      - Destroy cloud resources (if any)"
-  echo "      - Delete Hetzner SSH key (${ENV_NAME}-operator, if cloud)"
-  echo "      - Remove terraform state directory"
-  echo "      - Remove the entire environment directory"
+  echo "    This will remove the entire environment directory."
   echo ""
   read -p "    Proceed? (type 'yes' to confirm): " -r confirm_text || confirm_text=""
 
@@ -167,78 +182,14 @@ fi
 echo "==> Removing environment: $ENV_NAME"
 echo ""
 
-# ─────────────────────────────────────────────────────────────
-# Step 1: Destroy cloud resources (tf-destroy.sh)
-# ─────────────────────────────────────────────────────────────
-
-if ! is_sandbox; then
-  if [ -d "${DMF_ENV_TF_STATE_DIR}" ]; then
-    echo "==> Step 1: Destroying cloud resources..."
-    if "$SCRIPT_DIR/tf-destroy.sh" "$ENV_NAME" 2>/dev/null || true; then
-      echo "✓ Cloud resources destroyed"
-    else
-      echo "⚠ tf-destroy.sh had issues (continuing; state will be removed)"
-    fi
-  else
-    echo "==> Step 1: No terraform state found (skipping destroy)"
-  fi
-  echo ""
-else
-  echo "==> Sandbox environment (no cloud resources)"
-  echo ""
-fi
-
-# ─────────────────────────────────────────────────────────────
-# Step 2: Delete Hetzner SSH key (if cloud)
-# ─────────────────────────────────────────────────────────────
-# NOTE: This step fires on any cloud-manifest env (has manifest.yaml),
-# regardless of whether TF state exists. This is intentional: the key is
-# terraform-managed, but if TF state is lost while the key persists in
-# Hetzner (e.g. partial manual cleanup), this provides an orphaned-key
-# safety net. The hcloud delete call is idempotent (|| true → "not found").
-# See: dmfdeploy#20
-
-if ! is_sandbox; then
-  echo "==> Step 2: Deleting Hetzner SSH key..."
-  hcloud_context="$(grep -E '^\s*hcloud_context:' "${DMF_ENV_INVENTORY_DIR}/group_vars/all/main.yml" 2>/dev/null | awk -F': ' '{print $2}' | tr -d ' "'\''' || true)"
-
-  if [ -z "$hcloud_context" ]; then
-    hcloud_cmd=(hcloud)
-  else
-    hcloud_cmd=(hcloud --context "$hcloud_context")
-  fi
-
-  if "${hcloud_cmd[@]}" ssh-key delete "${ENV_NAME}-operator" 2>/dev/null || true; then
-    echo "✓ SSH key deleted"
-  else
-    echo "✓ SSH key not found (or already deleted)"
-  fi
-  echo ""
-fi
-
-# ─────────────────────────────────────────────────────────────
-# Step 3: Remove state directory
-# ─────────────────────────────────────────────────────────────
-
-echo "==> Step 3: Removing terraform state..."
-if [ -d "${DMF_ENV_TF_STATE_DIR}" ]; then
-  # Sanity check: path must be non-empty and under the env root
-  case "$DMF_ENV_TF_STATE_DIR" in
-    "${_DMF_DATA_ROOT}/envs/"?*/terraform-state) ;;
-    *) echo "ERROR: refusing rm -rf of unexpected path: '$DMF_ENV_TF_STATE_DIR'" >&2; exit 1 ;;
-  esac
-  rm -rf "${DMF_ENV_TF_STATE_DIR}"
-  echo "✓ State removed"
-else
-  echo "✓ State not present"
-fi
+echo "==> Sandbox environment (no cloud resources)"
 echo ""
 
 # ─────────────────────────────────────────────────────────────
-# Step 4: Remove environment root directory
+# Remove environment root directory
 # ─────────────────────────────────────────────────────────────
 
-echo "==> Step 4: Removing environment directory..."
+echo "==> Removing environment directory..."
 if [ -d "${DMF_ENV_ROOT}" ]; then
   # Sanity check: path must be non-empty and under ~/.dmfdeploy/envs/
   case "$DMF_ENV_ROOT" in

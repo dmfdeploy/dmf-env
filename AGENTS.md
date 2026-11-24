@@ -29,7 +29,7 @@ copy of the commands.
   `ansible-playbook` directly from an agent session.
 - Do not run `bin/get-admin-cred.sh` through an agent. It prints credentials to
   stdout, so run it in your own terminal (ADR-0007).
-- `bin/tf-apply.sh` and `bin/tf-destroy.sh` work for hetzner only and refuse sandbox.
+- `bin/tf-apply.sh` works for hetzner only and refuses sandbox. `bin/tf-destroy.sh` and `bin/remove-env.sh` refuse a hetzner env until dmfdeploy/dmfdeploy#997; tear down by hand in the provider console.
 - `bin/unseal-openbao.sh --status` checks state. A full unseal needs a human for the share prompt.
 - Secrets stay in OpenBao. Never commit, track or echo credentials.
 - Use placeholder values in docs you add: no real IPs, DNS names or operator identifiers.

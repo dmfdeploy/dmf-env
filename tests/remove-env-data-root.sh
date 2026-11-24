@@ -24,8 +24,8 @@ mkdir -p "${DMF_DATA_ROOT}/envs"
 
 accepted_env="accepted-env"
 accepted_root="${DMF_DATA_ROOT}/envs/${accepted_env}"
-accepted_state="${accepted_root}/terraform-state"
-mkdir -p "${accepted_root}/inventory/group_vars/all" "${accepted_state}"
+mkdir -p "${accepted_root}/inventory/group_vars/all"
+printf 'metadata:\n  provider: sandbox\n' > "${accepted_root}/manifest.yaml"
 
 accepted_log="${WORK_DIR}/accepted-rm.log"
 mkdir -p "${WORK_DIR}/bin"
@@ -41,12 +41,6 @@ PATH="${WORK_DIR}/bin:${PATH}" \
 ACCEPTED_RM_LOG="${accepted_log}" \
 "${SCRIPT}" --yes "${accepted_env}" >/dev/null 2>&1
 
-if ! grep -Fq -- "-rf ${accepted_state}" "${accepted_log}"; then
-  echo "FAIL: accepted terraform-state path was not removed"
-  cat "${accepted_log}" >&2
-  exit 1
-fi
-
 if ! grep -Fq -- "-rf ${accepted_root}" "${accepted_log}"; then
   echo "FAIL: accepted env root path was not removed"
   cat "${accepted_log}" >&2
@@ -56,6 +50,7 @@ fi
 refused_env="refused-env"
 refused_root="${WORK_DIR}/outside/envs/${refused_env}"
 mkdir -p "${refused_root}/inventory/group_vars/all" "${refused_root}/terraform-state"
+printf 'metadata:\n  provider: sandbox\n' > "${refused_root}/manifest.yaml"
 
 refused_output="${WORK_DIR}/refused.out"
 

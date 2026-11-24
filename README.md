@@ -34,7 +34,7 @@ Secrets are produced or fetched by the `bin/` wrappers immediately before each
 bin/                         wrapper scripts + secrets discipline
   init-wizard.sh             interactive greenfield env bootstrap (renders the env under ~/.dmfdeploy)
   run-playbook.sh            sanctioned ansible entry point (ADR-0010); injects secrets, enforces timeouts
-  tf-apply.sh / tf-destroy.sh  OpenTofu wrappers (hetzner)
+  tf-apply.sh / tf-destroy.sh  OpenTofu wrappers (hetzner); tf-destroy.sh refuses for now (#997)
   tf-render-inventory.sh     regenerate hosts.ini from tofu state
   bootstrap-secrets.sh       doctor / seed-install / export-vars subcommands
   unseal-openbao.sh          Shamir-quorum OpenBao unseal
@@ -111,7 +111,7 @@ bin/run-playbook.sh <env> ../dmf-infra/k3s-lab-bootstrap/bootstrap-sandbox-confi
 bin/run-playbook.sh <env> ../dmf-infra/k3s-lab-bootstrap/bootstrap-sandbox-verify.yml
 ```
 
-Teardown: `rm -rf ~/.dmfdeploy/envs/<env>`.
+Teardown: `bin/remove-env.sh <env>`, or `rm -rf ~/.dmfdeploy/envs/<env>`.
 
 ### Hetzner (cloud)
 
@@ -134,6 +134,11 @@ bin/run-playbook.sh <env> ../dmf-infra/k3s-lab-bootstrap/bootstrap-provision-pos
 ```
 
 See `terraform/README.md` for the OpenTofu (Layer-1) detail.
+
+Teardown is manual for now (dmfdeploy/dmfdeploy#997). `bin/remove-env.sh` and
+`bin/tf-destroy.sh` refuse a Hetzner env. In the Hetzner console, delete the
+servers, network, load balancer and SSH key, then remove the env dir with
+`rm -rf ~/.dmfdeploy/envs/<env>`.
 
 ### Seeding OpenBao
 

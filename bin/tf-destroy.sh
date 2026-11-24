@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # tf-destroy.sh — safe ordered teardown of the Hetzner cluster.
 #
+# OFF until dmfdeploy/dmfdeploy#997. This script refuses every env before it
+# calls hcloud or tofu; the steps below are kept for #997 and do not run.
+# Manual workflow: delete the servers, network, load balancer and SSH key in
+# the Hetzner console, then remove the env dir (~/.dmfdeploy/envs/<env-id>).
+#
 # Why this exists
 # ---------------
 # `tofu destroy` alone fails on this stack for three reasons:
@@ -27,7 +32,7 @@
 #   4. Delete the LB — no longer needed; CCM re-creates it on next
 #      cluster bring-up when the Service of type=LoadBalancer comes up.
 #
-# Usage (ENV_NAME is required — no default; current id is in the umbrella's STATUS.digest.local.md, which bin/generate-status.sh writes):
+# Usage (disabled until #997; the script refuses and exits non-zero):
 #   bin/tf-destroy.sh <env-id>
 #
 # Env-var overrides:
@@ -53,24 +58,33 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(dirname "$SCRIPT_DIR")"
+
+# shellcheck source=lib/_env_id.sh
+. "$SCRIPT_DIR/lib/_env_id.sh"
+
 ENV_NAME="${1:-}"
 if [ -z "$ENV_NAME" ]; then
-  echo "ERROR: ENV_NAME (your cloud env id) is required as the first arg." >&2
-  echo "  e.g. bin/tf-destroy.sh <env-id>   (current id is in the umbrella's STATUS.digest.local.md, which bin/generate-status.sh writes)" >&2
-  echo "  DESTRUCTIVE (tofu destroy) — never defaults to a baked env." >&2
+  echo "ERROR: tf-destroy.sh is off until dmfdeploy/dmfdeploy#997. Nothing was run." >&2
+  echo "  Manual workflow: delete the servers, network, load balancer and SSH key in the" >&2
+  echo "  Hetzner console, then remove the env dir (~/.dmfdeploy/envs/<env-id>)." >&2
   exit 1
 fi
+dmf_is_env_id "$ENV_NAME" || {
+  echo "ERROR: invalid env id '${ENV_NAME}' (lowercase letters, digits, hyphens; start and end alphanumeric; 63 chars or fewer). Nothing was run." >&2
+  exit 1
+}
 
 NETWORK_NAME="${NETWORK_NAME:-}"
 LB_NAME="${LB_NAME:-}"
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(dirname "$SCRIPT_DIR")"
 
 cd "$REPO_DIR"
 
 # shellcheck source=lib/_resolve_env_paths.sh
 . "$SCRIPT_DIR/lib/_resolve_env_paths.sh"
+# shellcheck source=bin/lib/_manifest_provider.sh
+. "$SCRIPT_DIR/lib/_manifest_provider.sh"
 # shellcheck source=lib/_inventory_var.sh
 . "$SCRIPT_DIR/lib/_inventory_var.sh"
 
@@ -82,26 +96,14 @@ dmf_resolve_env_paths "$ENV_NAME" || {
   exit 1
 }
 
-# Determine provider
-DMF_PROVIDER="$(inventory_var dmf_provider || true)"
-if [ -z "$DMF_PROVIDER" ]; then
-  case "$ENV_NAME" in
-    *)               DMF_PROVIDER="hetzner" ;;
-  esac
+# Refuse before any cloud call. The manifest decides, not the inventory:
+# sandbox has no destroy path, and hetzner is off until dmfdeploy/dmfdeploy#997.
+dmf_manifest_provider "$DMF_ENV_MANIFEST_FILE" || exit 1
+if [ "$PROVIDER" = sandbox ]; then
+  echo "ERROR: sandbox has no Terraform/OpenTofu destroy path" >&2
+  exit 1
 fi
-
-# Runtime guard: only hetzner has a Terraform/cloud destroy path.
-case "$DMF_PROVIDER" in
-  hetzner) ;;  # OK — the only supported provider for tf-destroy
-  sandbox)
-    echo "ERROR: sandbox has no Terraform/OpenTofu destroy path" >&2
-    exit 1
-    ;;
-  *)
-    echo "ERROR: unsupported provider for tf-destroy: $DMF_PROVIDER" >&2
-    exit 1
-    ;;
-esac
+dmf_hetzner_teardown_off || exit 1  # #997 removes this line
 
 HCLOUD_CONTEXT="$(inventory_var hcloud_context || true)"
 if [ -z "$NETWORK_NAME" ]; then
