@@ -18,6 +18,10 @@
 # (dir, file, symlink or broken symlink) means the manifest may be wrong: the
 # script refuses before removing anything.
 #
+# This script never contacts a sandbox node: k3s and the DMF data stay on it.
+# To wipe a sandbox node before a new install, see "Tear down a sandbox env"
+# in README.md.
+#
 # All steps are idempotent — re-running is a safe no-op.
 # New-layout only (targets only ~/.dmfdeploy/envs/<env>/, never the repo).
 
@@ -44,6 +48,7 @@ print_usage() {
   echo "" >&2
   echo "Removes a sandbox env's directory (idempotent)." >&2
   echo "Refuses hetzner and unknown envs; tear those down by hand (#997)." >&2
+  echo "Doesn't touch a sandbox node; see \"Tear down a sandbox env\" in README.md." >&2
   echo "" >&2
   echo "Options:" >&2
   echo "  --check    Dry-run: list what WOULD be removed, exit 0." >&2

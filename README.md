@@ -111,7 +111,85 @@ bin/run-playbook.sh <env> ../dmf-infra/k3s-lab-bootstrap/bootstrap-sandbox-confi
 bin/run-playbook.sh <env> ../dmf-infra/k3s-lab-bootstrap/bootstrap-sandbox-verify.yml
 ```
 
-Teardown: `bin/remove-env.sh <env>`, or `rm -rf ~/.dmfdeploy/envs/<env>`.
+#### Tear down a sandbox env
+
+Teardown removes the env directory, `${DMF_DATA_ROOT:-$HOME/.dmfdeploy}/envs/<env>`, and never connects to the node. k3s, the DMF pods, and their volumes stay on the node until you clean it.
+
+`bin/remove-env.sh --yes <env>` reads `metadata.provider` from the env's `manifest.yaml`. For `sandbox`, which today is always a sandbox on a host you bring (the wizard creates no cloud resources for it), it removes local files only. For `hetzner`, any other value, or no manifest, it stops with an error and removes nothing. Teardown of a Hetzner env is manual for now. For status, see [dmfdeploy/dmfdeploy#997](https://github.com/dmfdeploy/dmfdeploy/issues/997).
+
+The manifest decides; the script doesn't cross-check the inventory. The wizard never creates a `terraform-state` path for a sandbox, so the script also stops when anything exists at `<env>/terraform-state`. If a sandbox env has one, look at it by hand before you remove the env dir yourself. The trade-off: if the manifest of an env with tool-created cloud resources wrongly says `sandbox` and it has nothing at that path (for example remote, custom-path or already-lost state), the script removes its whole env dir, including any local state, inventory, credentials and keys in it. It makes no cloud API call, so that env's cloud resources stay behind until you remove them by hand. The **Teardown** action in dmf-init runs the same script inside the dmf-init container. There, `DMF_DATA_ROOT` is the session data root in the container, not a directory on your workstation.
+
+##### Before you re-image or wipe the node
+
+Both options destroy the node's data. Check the target first:
+
+1. Confirm the node address. For direct dmf-env use, read it from the env's inventory (see step 1 of the wipe below). With dmf-init, use the address you entered on the *Target node* step.
+2. Confirm that you're on the right machine. Log in over SSH and check the hostname, or check the instance in your provider console.
+3. Confirm that the node is a dedicated, disposable sandbox that you own, with no other workloads, and that you intend to lose its data.
+
+If you can't establish the node's identity or ownership, stop and resolve that first. Don't re-image or wipe.
+
+To get a clean node for the next install, re-image it. This is the reliable way and the one we recommend. Re-imaging removes everything on the node, including data outside k3s and the sandbox CA described below.
+
+##### Fallback: wipe k3s on the node
+
+Use this only if you can't re-image. It permanently destroys the cluster and the local PV data on the node, and it affects every pod that runs there.
+
+1. Keep the node address and SSH access before you delete the env directory. The teardown deletes the env's `ssh/` directory and inventory.
+
+   - **Direct dmf-env use.** On the workstation, run:
+
+     ```bash
+     grep ansible_host "${DMF_DATA_ROOT:-$HOME/.dmfdeploy}/envs/<env>/inventory/hosts.ini"
+     ls "${DMF_DATA_ROOT:-$HOME/.dmfdeploy}/envs/<env>/ssh"
+     ```
+
+     Copy the key in `ssh/` somewhere safe. Don't print it.
+   - **dmf-init.** dmf-init has no command that exports the inventory or key from a running session. You supplied both on the *Target node* step: the node IP and the SSH private key. Keep the key file you pasted from. The encrypted backup holds a copy of the env directory, but only a Manage restore reads it.
+
+   Before you start **Teardown**, confirm that your access works. From your workstation, log in with the key you kept:
+
+   ```bash
+   ssh -i <your-key-file> <ssh-user>@<node-address> hostname
+   ```
+
+   The command prints the node's hostname. If it can't reach the node, for example because only the container can, use another way in, such as provider console access, before you tear down.
+
+2. Run the target checks in the previous section. The node address must match the one from step 1.
+3. On the node, run the k3s uninstall script:
+
+   ```bash
+   sudo /usr/local/bin/k3s-uninstall.sh
+   sudo rm -rf /var/lib/dmf
+   ```
+
+   If `/usr/local/bin/k3s-uninstall.sh` doesn't exist, k3s was never installed, was removed already, or the install stopped partway. Don't create the script by hand. Check for leftovers with the commands in step 5. If anything remains, re-image the node. For what the script does, see the [K3s uninstall documentation](https://docs.k3s.io/installation/uninstall).
+
+4. Remove the sandbox CA. dmf-infra playbook `321-local-ca-trust.yml` installs it, and the wipe leaves it trusted. On the node, run:
+
+   ```bash
+   sudo rm -f /usr/local/share/ca-certificates/dmf-local-ca.crt
+   sudo update-ca-certificates --fresh
+   ```
+
+5. On the node, check what's left:
+
+   ```bash
+   systemctl list-units 'k3s*'          # lists no units
+   pgrep -a 'k3s|containerd-shim'       # prints nothing
+   mount | grep -E 'k3s|kubelet'        # prints nothing
+   ls /var/lib/rancher/k3s /var/lib/dmf # both: No such file or directory
+   ```
+
+   Don't delete `/var/lib/rancher` as a whole. Other software can use it. The uninstall script removes only k3s's own files.
+
+The wipe leaves these behind:
+
+- The k3s service drop-ins in `/etc/systemd/system/k3s.service.d/`. The next install removes them.
+- Data on a storage backend other than the default local-path, for example Longhorn volumes or external disks. The k3s uninstall doesn't delete it. Check your backend and remove only data that you know belongs to the sandbox.
+- Your host preparation: the cgroup boot parameter, swap settings, and SSH hardening. dmf-init applies the hardening again on the next install.
+
+If you can't confirm that the node is clean, re-image it.
 
 ### Hetzner (cloud)
 
