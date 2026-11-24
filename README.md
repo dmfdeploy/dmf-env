@@ -140,11 +140,17 @@ Use this only if you can't re-image. It permanently destroys the cluster and the
    - **Direct dmf-env use.** On the workstation, run:
 
      ```bash
-     grep ansible_host "${DMF_DATA_ROOT:-$HOME/.dmfdeploy}/envs/<env>/inventory/hosts.ini"
-     ls "${DMF_DATA_ROOT:-$HOME/.dmfdeploy}/envs/<env>/ssh"
+     ENV_DIR="${DMF_DATA_ROOT:-$HOME/.dmfdeploy}/envs/<env>"
+     grep ansible_host "$ENV_DIR/inventory/hosts.ini"
+     grep -h -E '^(ansible_user|ansible_ssh_private_key_file):' "$ENV_DIR"/inventory/group_vars/all/*.yml
      ```
 
-     Copy the key in `ssh/` somewhere safe. Don't print it.
+     The last command prints the SSH user and the path of the private key the env logs in with. Keep that file:
+
+     - If the path is outside the env directory, for example the key file you gave the wizard, the teardown leaves it in place.
+     - If the path is inside the env directory, copy the file somewhere safe first, because the teardown deletes it.
+
+     Don't print the key.
    - **dmf-init.** dmf-init has no command that exports the inventory or key from a running session. You supplied both on the *Target node* step: the node IP and the SSH private key. Keep the key file you pasted from. The encrypted backup holds a copy of the env directory, but only a Manage restore reads it.
 
    Before you start **Teardown**, confirm that your access works. From your workstation, log in with the key you kept:
