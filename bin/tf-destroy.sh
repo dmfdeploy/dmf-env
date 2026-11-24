@@ -46,8 +46,9 @@
 # What this script does NOT touch
 #   - Cloudflare wildcard A records (reconciled by 321-tailscale.yml on
 #     next bring-up).
-#   - Headscale node entries (reconciled by 322-headscale-cleanup.yml in
-#     lifecycle-finalise).
+#   - Headscale node entries. Remove them afterwards with dmf-infra's
+#     playbooks/322-headscale-cleanup.yml in sweep mode, with
+#     -e '{"headscale_active_hostnames": [], "headscale_cleanup_apply": true}'.
 #   - LAN Forgejo content / operator Keychain / break-glass JSON.
 
 set -euo pipefail
