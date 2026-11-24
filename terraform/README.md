@@ -86,6 +86,9 @@ bin/tf-render-inventory.sh <env>
 
 `bin/tf-apply.sh` / `bin/tf-destroy.sh` support **hetzner** only in v0.1;
 `sandbox` has no Terraform path and the wrappers refuse it early.
+`bin/tf-destroy.sh` also refuses hetzner until dmfdeploy/dmfdeploy#997 makes
+teardown safe. Until then, delete the servers, network, load balancer and SSH
+key in the Hetzner console, then remove the env dir by hand.
 
 ## Ignored attributes
 
