@@ -944,11 +944,30 @@ bao_kv_get() {
   } 2>/dev/null
 }
 
+# bao_kv_put PATH KEY VALUE [KEY VALUE ...] — write a KV path with BAO_WRITE_TOKEN.
+# The values go to bao as JSON on stdin, so no secret value appears in the arguments
+# of any process, on this machine or in the pod. Stdin holds the token on the first
+# line and the JSON after it. JSON also carries values with newlines unchanged, which
+# a line-by-line read in the pod cannot.
+bao_kv_put() {
+  local path="$1"
+  shift
+  {
+    printf '%s\n' "${BAO_WRITE_TOKEN}"
+    printf '%s\0' "$@" | python3 -c '
+import json, sys
+parts = sys.stdin.buffer.read().split(b"\0")[:-1]
+strings = [p.decode("utf-8") for p in parts]
+sys.stdout.write(json.dumps(dict(zip(strings[0::2], strings[1::2]))))
+'
+  } | remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
+    IFS= read -r BAO_TOKEN
+    export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
+    bao kv put "$1" -
+  ' bao_kv_put "${path}"
+}
+
 cmd_seed_bao() {
-  # TODO(adr-0011-trigger): bao kv put inside the OpenBao pod exposes
-  # secret values via argv (sh -c expansion). Operator-side stdin transport
-  # is clean; pod-internal hardening defers to move-2 or ADR-0011 triggers
-  # (public/OSS, external collaborators).
   require_env_name "${1:-}"
   local env_name="$1"
 
@@ -1023,18 +1042,8 @@ print(data.get('data', {}).get('data', {}).get('username', ''))
     echo "  secret/platform/bootstrap_admin: same value, no-op" >&2
   else
     echo "  Writing secret/platform/bootstrap_admin..." >&2
-    printf '%s\n%s\n%s\n%s\n' "${BAO_WRITE_TOKEN}" "${admin_username}" "${admin_email}" "${admin_password}" | \
-      remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
-        IFS= read -r BAO_TOKEN
-        export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
-        IFS= read -r USERNAME
-        IFS= read -r EMAIL
-        IFS= read -r PASSWORD
-        bao kv put secret/platform/bootstrap_admin \
-          username="${USERNAME}" \
-          email="${EMAIL}" \
-          password="${PASSWORD}"
-      ' || {
+    bao_kv_put secret/platform/bootstrap_admin \
+      username "${admin_username}" email "${admin_email}" password "${admin_password}" || {
       echo "ERROR: failed to write secret/platform/bootstrap_admin" >&2
       exit 1
     }
@@ -1048,13 +1057,7 @@ print(data.get('data', {}).get('data', {}).get('username', ''))
     echo "  secret/platform/k3s/cluster: already exists, skipping" >&2
   else
     echo "  Writing secret/platform/k3s/cluster..." >&2
-    printf '%s\n%s\n' "${BAO_WRITE_TOKEN}" "${k3s_token}" | \
-      remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
-        IFS= read -r BAO_TOKEN
-        export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
-        IFS= read -r K3S_TOKEN
-        bao kv put secret/platform/k3s/cluster token="${K3S_TOKEN}"
-      ' || {
+    bao_kv_put secret/platform/k3s/cluster token "${k3s_token}" || {
       echo "ERROR: failed to write secret/platform/k3s/cluster" >&2
       exit 1
     }
@@ -1094,13 +1097,7 @@ print(data.get('data', {}).get('data', {}).get('username', ''))
   existing_hcloud="$(bao_kv_get secret/platform/hetzner)" || existing_hcloud=""
   if [ -z "${existing_hcloud}" ] && [ -n "${hcloud_token}" ]; then
     echo "  Writing secret/platform/hetzner..." >&2
-    printf '%s\n%s\n' "${BAO_WRITE_TOKEN}" "${hcloud_token}" | \
-      remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
-        IFS= read -r BAO_TOKEN
-        export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
-        IFS= read -r TOKEN
-        bao kv put secret/platform/hetzner token="${TOKEN}"
-      '
+    bao_kv_put secret/platform/hetzner token "${hcloud_token}"
   elif [ -n "${existing_hcloud}" ]; then
     echo "  secret/platform/hetzner: already exists, skipping" >&2
   fi
@@ -1110,14 +1107,8 @@ print(data.get('data', {}).get('data', {}).get('username', ''))
   existing_alicloud="$(bao_kv_get secret/platform/alicloud)" || existing_alicloud=""
   if [ -z "${existing_alicloud}" ] && [ -n "${alicloud_access_key}" ]; then
     echo "  Writing secret/platform/alicloud..." >&2
-    printf '%s\n%s\n%s\n' "${BAO_WRITE_TOKEN}" "${alicloud_access_key}" "${alicloud_secret_key}" | \
-      remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
-        IFS= read -r BAO_TOKEN
-        export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
-        IFS= read -r ACCESS_KEY
-        IFS= read -r SECRET_KEY
-        bao kv put secret/platform/alicloud access_key="${ACCESS_KEY}" secret_key="${SECRET_KEY}"
-      '
+    bao_kv_put secret/platform/alicloud \
+      access_key "${alicloud_access_key}" secret_key "${alicloud_secret_key}"
   elif [ -n "${existing_alicloud}" ]; then
     echo "  secret/platform/alicloud: already exists, skipping" >&2
   fi
@@ -1127,15 +1118,8 @@ print(data.get('data', {}).get('data', {}).get('username', ''))
   existing_aws="$(bao_kv_get secret/platform/aws)" || existing_aws=""
   if [ -z "${existing_aws}" ] && [ -n "${aws_access_key_id}" ]; then
     echo "  Writing secret/platform/aws..." >&2
-    printf '%s\n%s\n%s\n%s\n' "${BAO_WRITE_TOKEN}" "${aws_access_key_id}" "${aws_secret_access_key}" "${aws_region}" | \
-      remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
-        IFS= read -r BAO_TOKEN
-        export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
-        IFS= read -r ACCESS_KEY_ID
-        IFS= read -r SECRET_ACCESS_KEY
-        IFS= read -r REGION
-        bao kv put secret/platform/aws access_key_id="${ACCESS_KEY_ID}" secret_access_key="${SECRET_ACCESS_KEY}" region="${REGION}"
-      '
+    bao_kv_put secret/platform/aws \
+      access_key_id "${aws_access_key_id}" secret_access_key "${aws_secret_access_key}" region "${aws_region}"
   elif [ -n "${existing_aws}" ]; then
     echo "  secret/platform/aws: already exists, skipping" >&2
   fi
@@ -1145,13 +1129,7 @@ print(data.get('data', {}).get('data', {}).get('username', ''))
   existing_cf="$(bao_kv_get secret/platform/cloudflare)" || existing_cf=""
   if [ -z "${existing_cf}" ] && [ -n "${cf_dns_token}" ]; then
     echo "  Writing secret/platform/cloudflare..." >&2
-    printf '%s\n%s\n' "${BAO_WRITE_TOKEN}" "${cf_dns_token}" | \
-      remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
-        IFS= read -r BAO_TOKEN
-        export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
-        IFS= read -r TOKEN
-        bao kv put secret/platform/cloudflare dns_token="${TOKEN}"
-      '
+    bao_kv_put secret/platform/cloudflare dns_token "${cf_dns_token}"
   elif [ -n "${existing_cf}" ]; then
     echo "  secret/platform/cloudflare: already exists, skipping" >&2
   fi
@@ -1161,13 +1139,7 @@ print(data.get('data', {}).get('data', {}).get('username', ''))
   existing_ts="$(bao_kv_get secret/platform/tailscale)" || existing_ts=""
   if [ -z "${existing_ts}" ] && [ -n "${ts_authkey}" ]; then
     echo "  Writing secret/platform/tailscale..." >&2
-    printf '%s\n%s\n' "${BAO_WRITE_TOKEN}" "${ts_authkey}" | \
-      remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
-        IFS= read -r BAO_TOKEN
-        export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
-        IFS= read -r TOKEN
-        bao kv put secret/platform/tailscale authkey="${TOKEN}"
-      '
+    bao_kv_put secret/platform/tailscale authkey "${ts_authkey}"
   elif [ -n "${existing_ts}" ]; then
     echo "  secret/platform/tailscale: already exists, skipping" >&2
   fi
@@ -1182,16 +1154,8 @@ print(data.get('data', {}).get('data', {}).get('username', ''))
     fi
     if [ "${has_notif}" = "true" ]; then
       echo "  Writing secret/platform/notifications..." >&2
-      printf '%s\n%s\n%s\n' "${BAO_WRITE_TOKEN}" "${ntfy_url}" "${healthchecks_url}" | \
-        remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
-          IFS= read -r BAO_TOKEN
-          export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
-          IFS= read -r NTFY_URL
-          IFS= read -r HC_URL
-          bao kv put secret/platform/notifications \
-            ntfy_url="${NTFY_URL}" \
-            healthchecks_url="${HC_URL}"
-        '
+      bao_kv_put secret/platform/notifications \
+        ntfy_url "${ntfy_url}" healthchecks_url "${healthchecks_url}"
     fi
   else
     echo "  secret/platform/notifications: already exists, skipping" >&2
@@ -1350,18 +1314,8 @@ print(data.get('data', {}).get('data', {}).get('email', ''))
     fi
     # Write (new path) or overwrite (sanctioned operator-identity migration).
     echo "  Writing ${app_path} (username=${app_username})..." >&2
-    printf '%s\n%s\n%s\n%s\n' "${BAO_WRITE_TOKEN}" "${app_username}" "${app_email}" "${admin_password}" | \
-      remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
-        IFS= read -r BAO_TOKEN
-        export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
-        IFS= read -r UNAME
-        IFS= read -r EMAIL
-        IFS= read -r PASSWORD
-        bao kv put '"${app_path}"' \
-          username="${UNAME}" \
-          email="${EMAIL}" \
-          password="${PASSWORD}"
-      ' || {
+    bao_kv_put "${app_path}" \
+      username "${app_username}" email "${app_email}" password "${admin_password}" || {
       echo "ERROR: failed to write ${app_path}" >&2
       exit 1
     }
@@ -1409,15 +1363,7 @@ print(data.get('data', {}).get('data', {}).get('username', ''))
     fi
   else
     echo "  Writing ${zot_svc_path} (username=zot-svc)..." >&2
-    printf '%s\n%s\n' "${BAO_WRITE_TOKEN}" "${zot_service_password}" | \
-      remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
-        IFS= read -r BAO_TOKEN
-        export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
-        IFS= read -r PASSWORD
-        bao kv put secret/apps/zot/service \
-          username="zot-svc" \
-          password="${PASSWORD}"
-      ' || {
+    bao_kv_put secret/apps/zot/service username zot-svc password "${zot_service_password}" || {
       echo "ERROR: failed to write ${zot_svc_path}" >&2
       exit 1
     }
@@ -1480,13 +1426,7 @@ except Exception:
       local bearer
       bearer="$(gen_secret 48 64)"
       echo "  Writing ${awx_autoscale_path} (bearer_token)..." >&2
-      printf '%s\n%s\n' "${BAO_WRITE_TOKEN}" "${bearer}" | \
-        remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
-          IFS= read -r BAO_TOKEN
-          export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
-          IFS= read -r BEARER
-          bao kv put secret/apps/awx-autoscale/runtime bearer_token="${BEARER}"
-        ' || {
+      bao_kv_put secret/apps/awx-autoscale/runtime bearer_token "${bearer}" || {
         echo "ERROR: failed to write ${awx_autoscale_path}" >&2
         exit 1
       }
@@ -1516,22 +1456,9 @@ except Exception:
       echo "  ${os_path}: already exists, skipping" >&2
     else
       echo "  Writing ${os_path}..." >&2
-      printf '%s\n%s\n%s\n%s\n%s\n%s\n' "${BAO_WRITE_TOKEN}" "${os_bucket}" "${os_endpoint}" "${os_region}" "${os_access_key}" "${os_secret_key}" | \
-        remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
-          IFS= read -r BAO_TOKEN
-          export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
-          IFS= read -r BUCKET
-          IFS= read -r ENDPOINT
-          IFS= read -r REGION
-          IFS= read -r ACCESS_KEY
-          IFS= read -r SECRET_KEY
-          bao kv put '"${os_path}"' \
-            bucket="${BUCKET}" \
-            endpoint="${ENDPOINT}" \
-            region="${REGION}" \
-            access_key_id="${ACCESS_KEY}" \
-            secret_access_key="${SECRET_KEY}"
-        ' || {
+      bao_kv_put "${os_path}" \
+        bucket "${os_bucket}" endpoint "${os_endpoint}" region "${os_region}" \
+        access_key_id "${os_access_key}" secret_access_key "${os_secret_key}" || {
         echo "ERROR: failed to write ${os_path}" >&2
         exit 1
       }
@@ -1573,9 +1500,6 @@ print(json.dumps(data, indent=2))
 }
 
 cmd_seed_awx_ssh() {
-  # TODO(adr-0011-trigger): bao kv put argv exposure inside the OpenBao pod.
-  # Operator-side stdin transport is clean; pod-internal hardening defers
-  # to move-2 or ADR-0011 triggers.
   require_env_name "${1:-}"
   local env_name="$1"
 
@@ -1664,14 +1588,7 @@ if key:
   fi
 
   echo "Writing secret/apps/awx/control_node_ssh..." >&2
-  # Token first line, then the multi-line SSH key (read until EOF).
-  { printf '%s\n' "${BAO_WRITE_TOKEN}"; printf '%s' "${ssh_key_data}"; } | \
-    remote_kubectl exec -i -n openbao "${BAO_POD}" -- sh -c '
-      IFS= read -r BAO_TOKEN
-      export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN
-      SSH_KEY_DATA="$(cat)"
-      bao kv put secret/apps/awx/control_node_ssh ssh_key_data="${SSH_KEY_DATA}"
-    ' || {
+  bao_kv_put secret/apps/awx/control_node_ssh ssh_key_data "${ssh_key_data}" || {
     echo "ERROR: failed to write secret/apps/awx/control_node_ssh" >&2
     exit 1
   }
