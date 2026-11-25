@@ -54,8 +54,8 @@ jobs:
         env:
           SOPS_VERSION: "3.13.3"
           SOPS_SHA256: "e5bec3346a873ae91d871550f3e698c1aad962aff462a080e40f25fde17fef6b"
-          YQ_VERSION: "4.54.1"
-          YQ_SHA256: "8e34fc298390875de416e6a4afcb8cabeceb25d9aa8506c1a2f9353cf702ea5f"
+          YQ_VERSION: "4.54.3"
+          YQ_SHA256: "129534601871538efe0ba4c5e62a34fb1d5f469bcb975c4fddeb467d82974973"
         run: |
           set -eu
           # age is in apt; sops is NOT in ubuntu-24.04 default repos → pinned release.
