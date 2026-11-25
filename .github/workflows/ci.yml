@@ -52,8 +52,8 @@ jobs:
           persist-credentials: false
       - name: Install test dependencies
         env:
-          SOPS_VERSION: "3.13.1"
-          SOPS_SHA256: "620a9d7e3352ababeca6908cea24a6e8b14ce89a448ddbd3f94f1ef3398f470a"
+          SOPS_VERSION: "3.13.3"
+          SOPS_SHA256: "e5bec3346a873ae91d871550f3e698c1aad962aff462a080e40f25fde17fef6b"
           YQ_VERSION: "4.54.1"
           YQ_SHA256: "8e34fc298390875de416e6a4afcb8cabeceb25d9aa8506c1a2f9353cf702ea5f"
         run: |
