@@ -24,13 +24,14 @@ dmf_check_controller_core() {
     echo "ERROR: ${pin_file} not found. Advance the dmf-infra checkout; older checkouts have no ansible-core pin and are not supported." >&2
     return 1
   fi
-  local line pin
-  line="$(cat "$pin_file")"
-  case "$line" in
-    ansible-core==[0-9]*.[0-9]*.[0-9]*) pin="${line#ansible-core==}" ;;
-    *) pin="" ;;
-  esac
-  if ! [[ "$pin" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  # Same rule as dmf-infra's ee/scripts/build.sh --check-pin: exactly one
+  # newline-terminated line, ansible-core==X.Y.Z.
+  local line pin=""
+  if [ "$(wc -l <"$pin_file" | tr -d ' ')" = "1" ]; then
+    line="$(cat "$pin_file")"
+    [[ "$line" =~ ^ansible-core==([0-9]+\.[0-9]+\.[0-9]+)$ ]] && pin="${BASH_REMATCH[1]}"
+  fi
+  if [ -z "$pin" ]; then
     echo "ERROR: ${pin_file} must contain exactly one line, ansible-core==X.Y.Z." >&2
     return 1
   fi
@@ -40,10 +41,10 @@ dmf_check_controller_core() {
     echo "ERROR: could not run ansible-playbook --version (is ansible-core installed on PATH?)." >&2
     return 1
   fi
-  core="$(printf '%s\n' "$out" | sed -n '1s/.*\[core \([0-9][0-9.]*\)\].*/\1/p')"
+  core="$(printf '%s\n' "$out" | sed -n '1s/^[^[]*\[core \([^]]*\)\].*/\1/p')"
   py="$(printf '%s\n' "$out" | sed -n 's/^ *python version = \([0-9][0-9.]*\).*/\1/p' | head -n 1)"
   if ! [[ "$core" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    echo "ERROR: could not read the ansible-core version from ansible-playbook --version." >&2
+    echo "ERROR: controller ansible-core version '${core:-unreadable}' is not a plain X.Y.Z release; prerelease and development builds are not supported (first line: $(printf '%s\n' "$out" | head -n 1))." >&2
     return 1
   fi
 
