@@ -29,6 +29,8 @@ REPO_DIR="$(dirname "$SCRIPT_DIR")"
 # shellcheck source=lib/_resolve_env_paths.sh
 . "$SCRIPT_DIR/lib/_resolve_env_paths.sh"
 dmf_source_operator_config
+# shellcheck source=lib/_controller_core.sh
+. "$SCRIPT_DIR/lib/_controller_core.sh"
 
 # Ensure we run from repo root
 cd "$REPO_DIR"
@@ -145,6 +147,10 @@ for field, name in (("operator_private_key_b64", "operator.key"),
         os.close(fd)
 '
 }
+
+# Fail before any secret leaves OpenBao when the controller's ansible-core minor
+# differs from dmf-infra's pin. DMF_INFRA_REPO overrides the sibling checkout.
+dmf_check_controller_core "${DMF_INFRA_REPO:-${REPO_DIR}/../dmf-infra}" || exit 1
 
 "$SCRIPT_DIR/bootstrap-secrets.sh" export-vars "$ENV_NAME" "$TMP_VARS_FILE"
 
