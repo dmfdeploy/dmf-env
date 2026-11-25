@@ -10,6 +10,8 @@
 #   C  a different minor fails and names both versions and the pin file
 #   D  a missing pin file fails and tells the operator to advance dmf-infra
 #   E  a malformed pin file fails and names the file
+#   E2 blank or unterminated pin lines fail
+#   E3 a prerelease or development controller core fails and names the version
 #   F  without a git checkout the record says "sha unknown" and still passes
 #   G  run-playbook.sh stops before the secret fetch when the check fails
 
@@ -103,6 +105,29 @@ for body in "ansible-core>=2.22.0" "ansible-core==2.22" "ansible-core==2.22.0 # 
     pass "rejects: $(printf '%s' "${body}" | head -n 1)"
   else
     fail "accepted or unnamed (rc=${RC}): ${body} -> ${OUT}"
+  fi
+done
+
+echo "[E2] blank or unterminated pin lines"
+for body in 'ansible-core==2.22.0\n\n' 'ansible-core==2.22.0\n\n\n' '\nansible-core==2.22.0\n' 'ansible-core==2.22.0'; do
+  # shellcheck disable=SC2059
+  printf "${body}" > "${PIN_FILE}"
+  check 2.22.0
+  if [ "${RC}" -ne 0 ] && printf '%s' "${OUT}" | grep -qF "${PIN_FILE}"; then
+    pass "rejects: ${body}"
+  else
+    fail "accepted or unnamed (rc=${RC}): ${body} -> ${OUT}"
+  fi
+done
+
+echo "[E3] prerelease and development controller cores"
+echo "ansible-core==2.22.0" > "${PIN_FILE}"
+for v in 2.22.0rc1 2.22.0.dev0 2.22.0b1; do
+  check "${v}"
+  if [ "${RC}" -ne 0 ] && printf '%s' "${OUT}" | grep -qF "'${v}'"; then
+    pass "rejects ${v} and names it"
+  else
+    fail "accepted or unnamed (rc=${RC}): ${v} -> ${OUT}"
   fi
 done
 
