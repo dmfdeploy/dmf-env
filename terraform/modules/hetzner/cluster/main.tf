@@ -162,14 +162,12 @@ data "hcloud_load_balancer" "dmf_traefik" {
 
 # ── Cloudflare DNS ──────────────────────────────────────────────────────
 data "cloudflare_zone" "primary" {
-  filter = {
-    name = var.spec.domain.tls.cloudflare_zone
-  }
+  name = var.spec.domain.tls.cloudflare_zone
 }
 
-resource "cloudflare_dns_record" "cluster_apex" {
+resource "cloudflare_record" "cluster_apex" {
   count   = var.publish_lb_dns_records ? 1 : 0
-  zone_id = data.cloudflare_zone.primary.zone_id
+  zone_id = data.cloudflare_zone.primary.id
   name    = local.apex_relative
   type    = "A"
   content = data.hcloud_load_balancer.dmf_traefik[0].ipv4
@@ -178,9 +176,9 @@ resource "cloudflare_dns_record" "cluster_apex" {
   comment = "Managed by OpenTofu"
 }
 
-resource "cloudflare_dns_record" "cluster_auth" {
+resource "cloudflare_record" "cluster_auth" {
   count   = var.publish_lb_dns_records ? 1 : 0
-  zone_id = data.cloudflare_zone.primary.zone_id
+  zone_id = data.cloudflare_zone.primary.id
   name    = local.auth_relative
   type    = "A"
   content = data.hcloud_load_balancer.dmf_traefik[0].ipv4
