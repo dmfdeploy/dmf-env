@@ -103,7 +103,7 @@ resource "hcloud_server" "node" {
 
   name        = each.value
   server_type = local.server_type
-  image       = "debian-12"
+  image       = "debian-13"
   location    = local.region
   ssh_keys    = [hcloud_ssh_key.k3s.name]
   user_data   = local.user_data
@@ -228,7 +228,7 @@ resource "hcloud_server" "agent" {
 
   name        = "${local.env_id}-${each.key}"
   server_type = each.value.server_type
-  image       = "debian-12"
+  image       = "debian-13"
   location    = each.value.location
   ssh_keys    = [hcloud_ssh_key.k3s.name]
   user_data   = local.user_data
