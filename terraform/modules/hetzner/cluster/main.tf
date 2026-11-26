@@ -127,6 +127,9 @@ resource "hcloud_server" "node" {
       placement_group_id,
       ssh_keys,
       public_net,
+      # `image` forces a replacement. Existing servers keep their image; only
+      # new servers get debian-13.
+      image,
       allow_deprecated_images,
       ignore_remote_firewall_ids,
       keep_disk,
@@ -252,6 +255,9 @@ resource "hcloud_server" "agent" {
       placement_group_id,
       ssh_keys,
       public_net,
+      # `image` forces a replacement. Existing servers keep their image; only
+      # new servers get debian-13.
+      image,
       allow_deprecated_images,
       ignore_remote_firewall_ids,
       keep_disk,
