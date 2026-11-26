@@ -4,12 +4,12 @@
 # PLATFORM: macOS + Lima ONLY — a maintainer convenience, NOT the paved
 # onboarding path. It hard-requires limactl/Lima (vmType vz, socket_vmnet on
 # en0) and produces a node whose SSH user / interface are `lima` / `lima0`.
-# The substrate-agnostic path is to bring any SSH-reachable Debian 12/13 ARM64
+# The substrate-agnostic path is to bring any SSH-reachable Debian 13 ARM64
 # node (works from any operator OS) and answer the dmf-init wizard's Target-node
 # fields for that node — Node IP, Ansible user (root, or the image default such
 # as debian), Interface (eth0/ens3/…). See dmfdeploy/dmfdeploy#81.
 #
-# VM-FIRST, env-agnostic. This script rebuilds ONLY the Lima Debian-12 VM
+# VM-FIRST, env-agnostic. This script rebuilds ONLY the Lima Debian 13 VM
 # substrate and emits its bridged LAN IP. It does NOT assume any particular
 # env id. Two modes:
 #
@@ -20,7 +20,7 @@
 #      / cert-manager flow.
 #
 # Faithful to the original recipe (see ~/.lima/dmf-sandbox/lima.yaml):
-#   Debian 12 (bookworm) · vmType vz · 4 CPU / 10 GiB / 60 GiB ·
+#   Debian 13 (trixie) · vmType vz · 4 CPU / 10 GiB / 60 GiB ·
 #   network lima:bridged (socket_vmnet on en0, defined in
 #   ~/.lima/_config/networks.yaml). The guest gets a DHCP LAN IP on lima0.
 #
@@ -41,7 +41,7 @@ MEMORY="${MEMORY:-10}"                 # GiB
 DISK="${DISK:-60}"                     # GiB
 VM_TYPE="${VM_TYPE:-vz}"
 NETWORK="${NETWORK:-lima:bridged}"
-TEMPLATE="${TEMPLATE:-template://debian-12}"
+TEMPLATE="${TEMPLATE:-template://debian-13}"
 GUEST_BRIDGE_IF="${GUEST_BRIDGE_IF:-lima0}"   # bridged NIC name inside the guest
 ENV_NAME="${ENV_NAME:-}"                       # empty = fresh-wizard mode (no committed env)
 IP_WAIT_TRIES="${IP_WAIT_TRIES:-30}"          # × 3s ≈ 90s for the DHCP lease
