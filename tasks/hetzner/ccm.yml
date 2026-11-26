@@ -12,7 +12,7 @@
 
 - name: Set Hetzner CCM defaults
   ansible.builtin.set_fact:
-    hcloud_ccm_version: "{{ hcloud_ccm_version | default('v1.31.1') }}"
+    hcloud_ccm_version: "{{ hcloud_ccm_version | default('v1.39.3') }}"
     hcloud_ccm_namespace: "{{ hcloud_ccm_namespace | default('kube-system') }}"
     hcloud_ccm_secret_name: "{{ hcloud_ccm_secret_name | default('hcloud') }}"
     hcloud_ccm_token: "{{ hcloud_ccm_token | default(vault_hcloud_token | default('')) }}"
